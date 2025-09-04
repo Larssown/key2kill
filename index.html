@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Key 2 Kill — v13 (No music)</title>
+  <style>
+    html, body { margin:0; height:100%; background:#0a0c11; overflow:hidden; }
+    canvas { display:block; width:100vw; height:100vh; image-rendering: pixelated; }
+    @font-face { font-family: "K2K-Pixel"; src: local("Courier New"); }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <!-- Loopande bakgrundsmusik -->
+<audio id="bgm" src="bgm.mp3" loop preload="auto" style="display:none"></audio>
+<audio id="sfx-shot" src="shot.mp3" preload="auto"></audio>
+  <script>
+    // =============================================================
+    //  KEY 2 KILL — v13 (No music)
+    //  • Reverts v12 music features (no file input, no music controls, no HUD line)
+    //  • Keeps SFX beeps (toggle with M)
+    //  • Keeps all gameplay from v11/v12: waves, miniboss (5x), boss (10x), relics (15/20/25),
+    //    melancholic whispers, subtle grain/flicker, cleaner character/enemy art, and drawGlints.
+    //  • Adds small self-tests in console.
+    // =============================================================
+
+    // ----------------------- PALETTE ------------------------------
+    const PALETTE = {
+      bg0: '#0b0f14', bg1: '#0c1116', grid: '#141a24', vignette: 'rgba(0,0,0,0.72)',
+      accent: '#9c3a42', ink: '#22060a', bloodHi: '#3d090e',
+      arrowFill: '#5b1820', arrowStroke: '#1f0a0d',
+      whisper: '#e3e8f3', whisperShadow: 'rgba(0,0,0,0.55)',
+      playerBody: '#c9ceda', playerVoid: '#0a0c10',
+      shade: '#2d313c', shadeTough: '#3a404a', boss: '#332126', miniBoss: '#2a2833',
+      bleedRing: '#4a0a10',
+      dissRing: 'rgba(185,205,230,0.95)', dissRingIdle: 'rgba(110,130,150,0.85)',
+      dissTint: 'rgba(26,38,62,0.18)', lowHPTint: 'rgba(20,30,60,0.17)'
+    };
+
+    // ----------------------- CONFIG ------------------------------
+    const CONFIG = {
+      dpr: Math.min(2, window.devicePixelRatio || 1),
+      player: { radius: 10, maxHP: 5, shakeOnShot: 3 },
+      enemy: { baseSpeed: 36, speedGrowth: 2.6, baseHP: 1, toughChancePerWave: 0.06, spawnPadding: 24 },
+      boss:  { baseHP: 12, hpPerTier: 8, speedScale: 0.7, touchDamage: 2, size: 22 },
+      miniboss: { baseHP: 8, hpPerTier: 5, speedScale: 0.8, touchDamage: 1, size: 18 },
+      wave:  { startEnemies: 6, addPerWave: 2, spawnInterval: 0.25, breakTime: 1.0, maxSimul: 60 },
+      qte:   { keys: ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'], wrongDamage: 1, appearScale: 1.10, wrongMeterPenalty: 15 },
+      diss:  { gainPerHit: 8, gainPerKill: 20, drainPerSec: 12, enemySpeedScale: 0.55, dmgBonus: 1, pierce: 1, chainAOERadius: 28, scoreMult: 2, graceOnActivate: 0.25, cooldown: 2.0 },
+      gore:  { particlesPerHit: [10, 18], particlesPerKill: [24, 36], gibCount: [2, 5], gravity: 120, drag: 0.985, poolAlpha: 0.10, maxParticles: 1400 },
+      score: { kill: 10, hit: 2, waveBonus: 25 },
+      whisper:{ fadeIn: 1.2, fadeOut: 1.2, minSize: 18, maxSize: 24, showChance: 0.65, color: PALETTE.whisper, shadow: PALETTE.whisperShadow },
+      fx:    { grainBase: 0.022, grainLowHPBoost: 0.028, flickerLowHPMax: 0.05 },
+      ui:    { ringRadius: 36, qteGap: 14 },
+      menu:  { whisperAlpha:[0.06,0.14], minSize:16, maxSize:22, minSpeed:10, maxSpeed:22 },
+      rain: { 
+    startWave: 2,          // börjar efter wave 2
+    baseRate: 40,          // droppar/sek vid start
+    ratePerWave: 25,       // + droppar/sek per wave
+    maxDrops: 600,         // max aktiva fallande droppar
+    speed: [360, 600],     // px/s (fallhastighet)
+    len: [14, 26],          // visuellt streck-längd
+    alpha: 0.45,            // genomskinlighet på strecken
+    fallDist: [18, 60],   // hur långt en droppe "faller" innan träff (px)
+windX: [-50, 50]     // sidvind (px/s) för lite diagonalkänsla
+  }
+};
+
+    const WHISPERS = [
+      "The stars never answer back.","Even silence has weight.","The sky feels endless, but I don’t.","Waves erase every trace.","The forest waits without me.","I dream of places that don’t exist.","Time is a circle I can’t escape.","The river keeps flowing, I don’t.","Every echo fades into nothing.","The horizon always out of reach.","The wind carries voices I can’t follow.","I exist only when observed.","Every step is further from the beginning.","The night sky feels hollow.","The sea has no memory.","Mountains stand where I crumble.","Shadows move without me.","I wonder who I would be without me.","Clouds drift with no destination.","The world forgets faster than I do.","Pages missing from my story.","The last chapter is blank.","Ink bleeds where words used to be.","Only margins remain.","The future never arrives.","I leave no mark on the ground.","The sky swallows every sound.","All mirrors lie.","The seasons turn without me.","I live in fragments.","The air feels ancient.","Nothing feels real anymore.","The moon forgets my face.","I walk, but never arrive.","The end has no ending.","Light fades faster than I can hold it.","I disappear between seconds.","Dreams slip through my hands.","The silence tastes like iron.","Everything is moving, except me."
+    ];
+
+    // ----------------------- STATE -------------------------------
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d'); ctx.imageSmoothingEnabled = false;
+
+    const bloodLayer = document.createElement('canvas');
+    const bloodCtx = bloodLayer.getContext('2d'); bloodCtx.imageSmoothingEnabled = false;
+
+    const noiseLayer = document.createElement('canvas'); noiseLayer.width = 128; noiseLayer.height = 128;
+    const noiseCtx = noiseLayer.getContext('2d', { willReadFrequently: true });
+    // --- MUSIC (BGM) ---
+const bgm = document.getElementById('bgm'); const sfxShot = document.getElementById('sfx-shot');
+function startMusic() {
+  if (!bgm) return;
+  bgm.volume = 0.35;        // lagom volym
+  bgm.muted = state.audio?.mute ?? false; // följ Mute-flaggan
+  // Kan misslyckas på första laddning pga autoplay; vi försöker igen på Enter (startGame)
+  bgm.play().catch(()=>{ /* ignorerar tills första tangenttryck */ });
+}
+function playShot() {
+  if (!sfxShot) return;
+  if (state.audio.mute) return; // respektera Mute
+  sfxShot.currentTime = 0;      // starta från början varje gång
+  sfxShot.volume = 0.1;         // justera volym
+  sfxShot.play().catch(()=>{});
+}
+
+    const state = {
+      running:false, inMenu:true, gameOver:false,
+      width:0, height:0, center:{x:0,y:0}, time:0, dt:0,
+      hp: 5, score:0, wave:0,
+      spawnQueue:0, spawnTimer:0, breakTimer:0,
+      enemies:[], particles:[], gibs:[], target:null,
+      isBossWave:false, isMiniBossWave:false,
+      qte:{ current:'ArrowUp', justPopped:0, combo:0 },
+      cam:{ shake:0,x:0,y:0 }, inputLocked:false,
+      audio:{ ctx:null, mute:false },
+      notif:{ t:0, text:'' },
+      diss:{ active:false, meter:0, cooldown:0, grace:0 },
+      bannerFlash:0,
+      whisper:{ active:false, text:'', t:0, duration:0, fontPx:20 },
+      whisperPool:[],
+      fx:{ glitch:0 },
+      glints:[],
+      menuWhispers: [],
+      powerups:{ echoHeart:false, fracturedFocus:false, glassVein:false },
+      mods:{ dissDrainMult:1.0, dissPierceBonus:0, dissAOEMult:1.0, scoreMultBonus:0.0, qteMissNullifyCooldown:0 },
+      overlay:{ type:null, options:[], selected:0 },
+      rain:{ drops:[], spawnCarry:0, hits:0 }
+    };
+
+    // ----------------------- AUDIO (SFX only) --------------------
+    function initAudio(){ if(state.audio.ctx) return; try{ state.audio.ctx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
+
+    // ----------------------- INPUT -------------------------------
+    window.addEventListener('keydown', (e)=>{
+      if(e.repeat) return;
+      if(state.overlay.type){
+        if(e.key==='ArrowLeft'){ state.overlay.selected = (state.overlay.selected+state.overlay.options.length-1)%state.overlay.options.length; }
+        else if(e.key==='ArrowRight'){ state.overlay.selected = (state.overlay.selected+1)%state.overlay.options.length; }
+        else if(e.key==='Enter'){ const pick = state.overlay.options[state.overlay.selected]; applyRelic(pick.id); state.overlay.type = null; state.notif = { t:1.2, text:`RELIC ACQUIRED: ${pick.title.toUpperCase()}`}; }
+        return;
+      }
+      if(e.key==='Enter' && state.inMenu){ startGame(); return; }
+      if(e.key==='R' || e.key==='r'){ restart(); return; }
+      if (e.key==='M' || e.key==='m') {
+  state.audio.mute = !state.audio.mute;
+  if (bgm) bgm.muted = state.audio.mute; // muta/avmuta musiken också
+  return;
+}
+      if(!state.running || state.gameOver || state.inMenu) return;
+      if(CONFIG.qte.keys.includes(e.key)) handleQTE(e.key);
+    });
+
+    // ----------------------- GAME FLOW ---------------------------
+    function startGame(){ initAudio(); startMusic(); state.inMenu=false; state.gameOver=false; state.running=true; state.score=0; state.hp=getMaxHP(); state.enemies.length=0; state.particles.length=0; state.gibs.length=0; state.wave=0; state.spawnQueue=0; state.breakTimer=0; state.diss={active:false,meter:0,cooldown:0,grace:0}; state.whisperPool = shuffledIndices(WHISPERS.length); state.whisper.active=false; state.whisper.t=0; resetRelics(); nextQTE(true); nextWave(); }
+    function getMaxHP(){ return CONFIG.player.maxHP + (state.powerups.echoHeart?1:0); }
+    function resetRelics(){ state.powerups={ echoHeart:false, fracturedFocus:false, glassVein:false }; state.mods={ dissDrainMult:1.0, dissPierceBonus:0, dissAOEMult:1.0, scoreMultBonus:0.0, qteMissNullifyCooldown:0 }; }
+    function restart(){ state.inMenu=true; state.gameOver=false; state.running=false; bloodCtx.clearRect(0,0,bloodLayer.width,bloodLayer.height); initMenuWhispers(); }
+    function gameOver(){ state.gameOver=true; state.running=false; state.whisper.active=false; }
+
+    // ----------------------- QTE SYSTEM --------------------------
+    function nextQTE(init=false){ const keys = CONFIG.qte.keys; if(init){ state.qte.current = keys[(Math.random()*keys.length)|0]; state.qte.justPopped=0.10; return; } let k; do { k = keys[(Math.random()*keys.length)|0]; } while (k === state.qte.current); state.qte.current=k; state.qte.justPopped=0.10; }
+    function handleQTE(key){ if(state.inputLocked) return; if(key !== state.qte.current){ if(state.diss.active && state.diss.grace>0){ /* first miss ignored */ } else { if(state.powerups.fracturedFocus && state.mods.qteMissNullifyCooldown<=0){ state.mods.qteMissNullifyCooldown=5.0; state.notif={t:0.7,text:'MISS NULLIFIED'}; } else { state.qte.combo=0; if(!state.diss.active && state.diss.cooldown<=0) state.diss.meter = Math.max(0, state.diss.meter - CONFIG.qte.wrongMeterPenalty); hurtPlayer(CONFIG.qte.wrongDamage, true); } state.inputLocked=true; setTimeout(()=> state.inputLocked=false, 100); } nextQTE(); return; } state.qte.combo++; const mult = (state.diss.active? CONFIG.diss.scoreMult : 1) * (1+state.mods.scoreMultBonus); playShot(); fireShot(); state.score += Math.floor(CONFIG.score.hit * mult); if(!state.diss.active && state.diss.cooldown<=0){ state.diss.meter = Math.min(100, state.diss.meter + CONFIG.diss.gainPerHit); if(state.diss.meter>=100) activateDiss(); } nextQTE(); }
+    function activateDiss(){ state.diss.active=true; state.diss.grace = CONFIG.diss.graceOnActivate; state.bannerFlash=0.6; beep('boss',0.5,105); state.notif={t:0.9,text:'DISSOCIATION'}; }
+
+    // ----------------------- ENTITIES ----------------------------
+    function spawnEnemy(){ if(state.enemies.length>=CONFIG.wave.maxSimul) return; const edge=(Math.random()*4)|0; const pad=CONFIG.enemy.spawnPadding; let x,y; if(edge===0){ x=randRange(pad,state.width-pad); y=pad; } else if(edge===1){ x=state.width-pad; y=randRange(pad,state.height-pad); } else if(edge===2){ x=randRange(pad,state.width-pad); y=state.height-pad; } else { x=pad; y=randRange(pad,state.height-pad); } const tough=Math.random() < (CONFIG.enemy.toughChancePerWave * state.wave); const hp = CONFIG.enemy.baseHP + (tough?1:0) + ((state.wave>8 && Math.random()<0.1)?1:0); const speed=(CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave + (Math.random()*8-4)); state.enemies.push({ x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,boss:false,mini:false }); }
+    function spawnBoss(){ const pad=CONFIG.enemy.spawnPadding; const edge=(Math.random()*4)|0; let x,y; if(edge===0){x=randRange(pad,state.width-pad);y=pad;} else if(edge===1){x=state.width-pad;y=randRange(pad,state.height-pad);} else if(edge===2){x=randRange(pad,state.width-pad);y=state.height-pad;} else {x=pad;y=randRange(pad,state.height-pad);} const tier=Math.max(1, Math.floor(state.wave/10)); const hp=CONFIG.boss.baseHP + CONFIG.boss.hpPerTier * tier; const speed=(CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave) * CONFIG.boss.speedScale; state.enemies.push({ x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,boss:true,mini:false,size:CONFIG.boss.size }); state.notif={t:1.0,text:'BOSS'}; beep('boss',0.65,80); }
+    function spawnMiniBoss(){ const pad=CONFIG.enemy.spawnPadding; const edge=(Math.random()*4)|0; let x,y; if(edge===0){x=randRange(pad,state.width-pad);y=pad;} else if(edge===1){x=state.width-pad;y=randRange(pad,state.height-pad);} else if(edge===2){x=randRange(pad,state.width-pad);y=state.height-pad;} else {x=pad;y=randRange(pad,state.height-pad);} const tier=Math.max(1, Math.floor(state.wave/5)); const hp=CONFIG.miniboss.baseHP + CONFIG.miniboss.hpPerTier * tier; const speed=(CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave) * CONFIG.miniboss.speedScale; state.enemies.push({ x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,boss:false,mini:true,size:CONFIG.miniboss.size }); state.notif={t:1.0,text:'MINIBOSS'}; beep('boss',0.55,95); }
+
+    function nearestEnemy(){ let best=null, bestD=1e9; const cx=state.center.x, cy=state.center.y; for(const e of state.enemies){ if(e.dead) continue; const dx=e.x-cx, dy=e.y-cy; const d=dx*dx+dy*dy; if(d<bestD){ bestD=d; best=e; } } return best; }
+    function enemiesAlongRay(ang, minDist, maxCount, angleTol=0.3){ const cx=state.center.x, cy=state.center.y; const out=[]; const candidates=[]; for(const e of state.enemies){ if(e.dead) continue; const dx=e.x-cx, dy=e.y-cy; const dist=Math.hypot(dx,dy); if(dist<=minDist) continue; const a=Math.atan2(dy,dx); let da=Math.abs(normalizeAngle(a-ang)); if(da<=angleTol){ candidates.push({e,dist}); } } candidates.sort((a,b)=>a.dist-b.dist); for(let i=0;i<candidates.length && out.length<maxCount;i++) out.push(candidates[i].e); return out; }
+
+    function killEnemy(e){ e.dead=true; splatterAt(e.x,e.y,true); dropGibs(e.x,e.y); const mult= (state.diss.active? CONFIG.diss.scoreMult : 1) * (1+state.mods.scoreMultBonus); state.score += Math.floor(CONFIG.score.kill * mult); state.cam.shake = Math.min(12, state.cam.shake+4); beep('splat',0.7,120); if(!state.diss.active && state.diss.cooldown<=0){ state.diss.meter = Math.min(100, state.diss.meter + CONFIG.diss.gainPerKill); if(state.diss.meter>=100) activateDiss(); } if(state.diss.active){ const rad=CONFIG.diss.chainAOERadius * state.mods.dissAOEMult; const r2=rad*rad; for(const o of state.enemies){ if(o.dead||o===e) continue; const dx=o.x-e.x, dy=o.y-e.y; if(dx*dx+dy*dy<=r2){ o.hp -= 1; o.bleed=0.2; if(o.hp<=0) killEnemy(o); } } } }
+    function hurtPlayer(dmg=1,selfSplat=false){ state.hp -= dmg; state.cam.shake = Math.min(14, state.cam.shake+6); beep('hurt',0.45,90); if(selfSplat) splatterAt(state.center.x,state.center.y,false,1.0); if(state.hp<=0) gameOver(); }
+
+    // ----------------------- COMBAT ------------------------------
+    function fireShot(){ state.cam.shake = Math.min(10, state.cam.shake + CONFIG.player.shakeOnShot); beep('shot',0.55,290+Math.random()*40); const t=nearestEnemy(); if(!t){ addGlint(); return; } const ang=Math.atan2(t.y-state.center.y, t.x-state.center.x); addGlint(); let dmg=1 + (state.diss.active? CONFIG.diss.dmgBonus:0); let pierceLeft = (state.diss.active? CONFIG.diss.pierce:0) + state.mods.dissPierceBonus; applyHit(t,dmg); if(pierceLeft>0){ let minDist = Math.hypot(t.x-state.center.x, t.y-state.center.y)+8; const list = enemiesAlongRay(ang, minDist, pierceLeft); for(const e of list) applyHit(e,dmg); } }
+    function applyHit(target,dmg){ splatterAlongRay(state.center.x,state.center.y,target.x,target.y); target.hp -= dmg; target.bleed=0.25; if(target.hp<=0) killEnemy(target); else splatterAt(target.x,target.y,false); }
+    function addGlint(){ state.glints.push({ x:state.center.x, y:state.center.y, t:0, life:0.22 }); }
+
+    // ----------------------- GORE (INK) --------------------------
+    function makeParticle(x,y,vx,vy,life=0.6, r=null,g=null,b=null){ return { x,y,vx,vy,life,maxLife:life, r: r ?? randRange(80,130), g: g ?? randRange(0,8), b: b ?? randRange(6,12), size: randRange(2,4) }; }
+    function splatterAt(x,y,heavy=false,intensity=1){ const [minP,maxP] = heavy? CONFIG.gore.particlesPerKill : CONFIG.gore.particlesPerHit; const count = Math.floor(randRange(minP,maxP)*intensity); for(let i=0;i<count;i++){ const a=Math.random()*Math.PI*2; const sp= heavy? randRange(120,210): randRange(70,140); state.particles.push(makeParticle(x,y,Math.cos(a)*sp,Math.sin(a)*sp,randRange(0.35,0.8))); } bloodCtx.save(); bloodCtx.globalAlpha = CONFIG.gore.poolAlpha * (heavy?1.8:1.0) * intensity; bloodCtx.fillStyle = PALETTE.ink; for(let i=0;i<(heavy?6:3);i++){ const rx=randRange(-10,10), ry=randRange(-10,10); const w=randRange(16,28)*(heavy?1.3:1.0); const h=randRange(6,14)*(heavy?1.3:1.0); bloodCtx.beginPath(); bloodCtx.ellipse(x+rx, y+ry, w, h, Math.random()*Math.PI, 0, Math.PI*2); bloodCtx.fill(); } bloodCtx.restore(); }
+    function splatterAlongRay(x1,y1,x2,y2){ const dx=x2-x1, dy=y2-y1; const len=Math.hypot(dx,dy); const steps=Math.max(3, Math.floor(len/30)); for(let i=1;i<steps;i++){ const t=i/steps; const x=x1+dx*t+randRange(-3,3); const y=y1+dy*t+randRange(-3,3); if(Math.random()<0.4) state.particles.push(makeParticle(x,y,randRange(-50,50),randRange(-50,50),randRange(0.12,0.3))); } }
+    function dropGibs(x,y){ const n=Math.floor(randRange(CONFIG.gore.gibCount[0], CONFIG.gore.gibCount[1])); for(let i=0;i<n;i++){ const a=Math.random()*Math.PI*2; const sp=randRange(110,200); state.gibs.push({ x,y,vx:Math.cos(a)*sp, vy:Math.sin(a)*sp - randRange(25,70), ang:Math.random()*Math.PI*2, va:randRange(-6,6), size:randRange(6,12), life:randRange(0.9,1.6) }); } }
+
+    // ----------------------- WAVES & RELICS ----------------------
+    function nextWave(){ state.wave++; state.hp = getMaxHP(); state.notif = { t: 0.9, text: 'FULL HEALTH' }; state.breakTimer = CONFIG.wave.breakTime; state.isBossWave = (state.wave % 10 === 0); state.isMiniBossWave = (!state.isBossWave) && (state.wave % 5 === 0); setupWhisperForBreak(); if(state.isBossWave){ state.spawnQueue=0; state.spawnTimer=0; setTimeout(spawnBoss, 200); } else if(state.isMiniBossWave){ state.spawnQueue=0; state.spawnTimer=0; setTimeout(spawnMiniBoss, 200); } else { const toSpawn = CONFIG.wave.startEnemies + CONFIG.wave.addPerWave*(state.wave-1); state.spawnQueue = toSpawn; state.spawnTimer=0.0; } state.score += CONFIG.score.waveBonus; }
+
+    function setupWhisperForBreak(){ if(state.isBossWave || state.isMiniBossWave) { state.whisper.active=false; return; } if(Math.random()>CONFIG.whisper.showChance){ state.whisper.active=false; return; } if(state.whisperPool.length===0) state.whisperPool = shuffledIndices(WHISPERS.length); const idx=state.whisperPool.pop(); const line=WHISPERS[idx]; const fontPx=Math.floor(randRange(CONFIG.whisper.minSize, CONFIG.whisper.maxSize+1)); const duration=CONFIG.whisper.fadeIn + CONFIG.whisper.fadeOut; state.whisper={active:true,text:line,t:0,duration,fontPx}; state.breakTimer = Math.max(state.breakTimer, duration); }
+
+    function maybeOfferRelic(){ const options = []; if(state.wave===15 && !state.powerups.echoHeart) options.push({ id:'echoHeart', title:'Echo Heart', desc:'+1 Max HP; Dissociation drains 15% slower.'}); if(state.wave===20 && !state.powerups.fracturedFocus) options.push({ id:'fracturedFocus', title:'Fractured Focus', desc:'Once every 5s, a QTE miss deals 0 HP; +5% score.'}); if(state.wave===25 && !state.powerups.glassVein) options.push({ id:'glassVein', title:'Glass Vein', desc:'Dissociation +1 pierce; +30% chain AOE radius.'}); if(options.length){ state.overlay={ type:'relic', options, selected:0 }; state.running=false; } }
+
+    function applyRelic(id){ if(id==='echoHeart'){ state.powerups.echoHeart=true; state.mods.dissDrainMult=0.85; state.hp = getMaxHP(); } else if(id==='fracturedFocus'){ state.powerups.fracturedFocus=true; state.mods.scoreMultBonus += 0.05; state.mods.qteMissNullifyCooldown = 0; } else if(id==='glassVein'){ state.powerups.glassVein=true; state.mods.dissPierceBonus += 1; state.mods.dissAOEMult *= 1.3; } state.running=true; }
+
+    // ----------------------- UPDATE ------------------------------
+    function loop(now){ requestAnimationFrame(loop); const t=now*0.001; state.dt=Math.min(0.033, t - state.time); state.time=t; state.cam.shake*=0.92; if(state.cam.shake<0.1) state.cam.shake=0; state.cam.x=(Math.random()*2-1)*state.cam.shake; state.cam.y=(Math.random()*2-1)*state.cam.shake; if(state.overlay.type){ /* paused for overlay */ } else if(state.running) updateGame(state.dt); render(); }
+    function updateGame(dt){ if(state.qte.justPopped>0) state.qte.justPopped-=dt; if(state.bannerFlash>0) state.bannerFlash-=dt; if(state.diss.active){ state.diss.meter -= CONFIG.diss.drainPerSec * state.mods.dissDrainMult * dt; state.diss.grace -= dt; if(state.diss.grace<0) state.diss.grace=0; if(state.diss.meter<=0){ state.diss.active=false; state.diss.meter=0; state.diss.cooldown = CONFIG.diss.cooldown; } } else if(state.diss.cooldown>0){ state.diss.cooldown -= dt; if(state.diss.cooldown<0) state.diss.cooldown=0; } if(state.mods.qteMissNullifyCooldown>0) state.mods.qteMissNullifyCooldown -= dt; if(state.breakTimer>0){ state.breakTimer -= dt; if(state.whisper.active){ state.whisper.t += dt; if(state.whisper.t>=state.whisper.duration) state.whisper.active=false; } } else { if(!state.isBossWave && !state.isMiniBossWave){ if(state.spawnQueue>0){ state.spawnTimer -= dt; if(state.spawnTimer<=0){ spawnEnemy(); state.spawnQueue--; state.spawnTimer = CONFIG.wave.spawnInterval * (0.95 ** (state.wave-1)); } } } } const cx=state.center.x, cy=state.center.y; const speedScale= state.diss.active? CONFIG.diss.enemySpeedScale : 1.0; for(const e of state.enemies){ if(e.dead) continue; const dx=cx-e.x, dy=cy-e.y; const d=Math.hypot(dx,dy)||1; const sp=(e.speed*speedScale)*dt; e.x += (dx/d)*sp; e.y += (dy/d)*sp; const typeSize = e.boss? CONFIG.boss.size*0.5 : (e.mini? CONFIG.miniboss.size*0.5 : 6); const touchR = typeSize + CONFIG.player.radius; if(Math.hypot(e.x-cx, e.y-cy) < touchR){ const touchDmg = e.boss? CONFIG.boss.touchDamage : (e.mini? CONFIG.miniboss.touchDamage : 1); hurtPlayer(touchDmg); if(e.boss || e.mini){ const nx=-dx/d, ny=-dy/d; e.x += nx*18; e.y += ny*18; } else { e.dead=true; splatterAt(e.x,e.y,true); dropGibs(e.x,e.y); } } } state.enemies = state.enemies.filter(e=>!e.dead); const bossAlive = state.enemies.some(e=> (e.boss || e.mini) && !e.dead); const waveDone = (state.breakTimer<=0) && (state.spawnQueue===0) && (!bossAlive) && (state.enemies.length===0); if(waveDone){ if(state.isMiniBossWave || state.isBossWave){ maybeOfferRelic(); } nextWave(); } const g=CONFIG.gore.gravity; for(const p of state.particles){ p.vx*=CONFIG.gore.drag; p.vy*=CONFIG.gore.drag; p.vy += g*dt; p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt; if(p.life<=0){ bloodCtx.save(); bloodCtx.globalAlpha=0.14; bloodCtx.fillStyle = `rgb(${p.r|0},${p.g|0},${p.b|0})`; bloodCtx.fillRect(p.x,p.y,p.size,p.size); bloodCtx.restore(); } } if(state.particles.length>CONFIG.gore.maxParticles) state.particles.splice(0, state.particles.length - CONFIG.gore.maxParticles); state.particles = state.particles.filter(p=>p.life>0); for(const gB of state.gibs){ gB.vx*=0.992; gB.vy*=0.992; gB.vy += g*dt; gB.x += gB.vx*dt; gB.y += gB.vy*dt; gB.ang += gB.va*dt; gB.life -= dt*0.25; if(gB.life<=0){ bloodCtx.save(); bloodCtx.globalAlpha=0.18; bloodCtx.fillStyle = PALETTE.ink; bloodCtx.translate(gB.x,gB.y); bloodCtx.rotate(gB.ang); bloodCtx.fillRect(-gB.size*0.7,-gB.size*0.3,gB.size*1.4,gB.size*0.6); bloodCtx.restore(); } } state.gibs = state.gibs.filter(gb=>gb.life>0); for(const gl of state.glints){ gl.t += dt; } state.glints = state.glints.filter(gl=> gl.t < gl.life); if(state.hp<=2){ if(Math.random()<0.015) state.fx.glitch = 0.10; } state.fx.glitch *= 0.9; state.target = nearestEnemy(); if(state.notif.t>0) state.notif.t -= dt; updateRain(dt); if(state.gameOver) return; }
+
+    // ----------------------- RENDER ------------------------------
+    function render(){ ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width, canvas.height); ctx.save(); ctx.translate(state.cam.x, state.cam.y); drawArena(); ctx.drawImage(bloodLayer,0,0); drawRain(); for(const e of state.enemies) drawEnemy(e); drawPlayer(); for(const p of state.particles) drawParticle(p); drawGlints(); if(!state.inMenu && !state.gameOver){ drawDissociationRing(); drawQTE(); } ctx.restore(); drawGrainAndFlicker(); drawHUD(); if(!state.inMenu && !state.gameOver) drawWhisper(); if(state.inMenu) { drawMenuBackground(); drawMenu(); } else if(state.gameOver) drawGameOver(); if(state.overlay.type) drawOverlay(); }
+
+    function drawArena(){ const w=canvas.width, h=canvas.height; const grad = ctx.createRadialGradient(state.center.x, state.center.y, 60, state.center.x, state.center.y, Math.max(w,h)*0.75); grad.addColorStop(0, PALETTE.bg1); grad.addColorStop(1, '#07090f'); ctx.fillStyle = grad; ctx.fillRect(0,0,w,h); ctx.globalAlpha=0.13; ctx.fillStyle=PALETTE.grid; for(let x=0;x<w;x+=24) ctx.fillRect(x,0,1,h); for(let y=0;y<h;y+=24) ctx.fillRect(0,y,w,1); ctx.globalAlpha=1; const vg = ctx.createRadialGradient(state.center.x, state.center.y, Math.min(w,h)*0.45, state.center.x, state.center.y, Math.max(w,h)*0.85); vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1, PALETTE.vignette); ctx.fillStyle=vg; ctx.fillRect(0,0,w,h); if(state.diss.active){ ctx.fillStyle=PALETTE.dissTint; ctx.fillRect(0,0,w,h); } if(state.hp<=2){ ctx.fillStyle=PALETTE.lowHPTint; ctx.fillRect(0,0,w,h); } }
+
+    function drawPlayer(){ const x=state.center.x, y=state.center.y; const t=state.target; const ang = t? Math.atan2(t.y - y, t.x - x) : 0; ctx.save(); ctx.translate(x,y); if(state.bannerFlash>0){ ctx.globalAlpha = Math.max(0, state.bannerFlash); ctx.fillStyle='rgba(255,255,255,0.16)'; ctx.beginPath(); ctx.arc(0,0,58,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1; } const breathe = Math.sin(state.time*1.6)*0.5; ctx.fillStyle = PALETTE.playerBody; pxRect(-7, -12 + breathe, 14, 24); ctx.beginPath(); ctx.fillStyle=PALETTE.playerBody; ctx.arc(0, -20 + breathe, 6, 0, Math.PI*2); ctx.fill(); ctx.fillStyle = PALETTE.playerVoid; pxRect(-2, -8 + breathe, 4, 8); ctx.rotate(ang); ctx.fillStyle = '#2c313e'; pxRect(6, -2, 10, 4); ctx.restore(); }
+
+    function drawEnemy(e){ ctx.save(); ctx.translate(e.x, e.y); if(e.boss){ ctx.fillStyle = PALETTE.boss; const w = CONFIG.boss.size*1.2, h = CONFIG.boss.size*2.2; pxRect(-w/2, -h/2, w, h); ctx.globalAlpha=0.2; ctx.fillStyle='#000'; for(let i=-w/2+2;i<w/2;i+=6){ pxRect(i|0, (-h/2)|0, 1, h|0); } ctx.globalAlpha=1; } else if(e.mini){ ctx.fillStyle = PALETTE.miniBoss; const w = CONFIG.miniboss.size*1.2, h = CONFIG.miniboss.size*2.0; pxRect(-w/2, -h/2, w, h); ctx.globalAlpha=0.18; ctx.fillStyle='#000'; for(let i=-w/2+2;i<w/2;i+=7){ pxRect(i|0, (-h/2)|0, 1, h|0); } ctx.globalAlpha=1; } else { const tough = e.hp>=2; ctx.fillStyle = tough? PALETTE.shadeTough : PALETTE.shade; const w=10, h=20; pxRect(-w/2, -h/2, w, h); ctx.globalAlpha=0.12; pxRect((-w/2-1)|0, (-h/2)|0, 1, h|0); pxRect((w/2)|0, (-h/2)|0, 1, h|0); ctx.globalAlpha=1; } if(e.bleed>0){ ctx.globalAlpha = Math.max(0, e.bleed); ctx.strokeStyle = PALETTE.bleedRing; ctx.lineWidth=2; ctx.beginPath(); const rr = e.boss? CONFIG.boss.size+6 : (e.mini? CONFIG.miniboss.size+6 : 10); ctx.arc(0,0,rr,0,Math.PI*2); ctx.stroke(); ctx.globalAlpha=1; e.bleed -= 0.02; } ctx.restore(); }
+
+    function drawParticle(p){ ctx.fillStyle = `rgb(${p.r|0},${p.g|0},${p.b|0})`; ctx.fillRect(p.x, p.y, p.size, p.size); }
+
+    function drawGlints(){
+      for(const gl of state.glints){
+        const k = gl.t / gl.life;           // 0..1 lifetime
+        const a = Math.max(0, 1 - k);       // fade out
+        const r = 56 + k*28;                // expanding ring
+        const grad = ctx.createRadialGradient(gl.x, gl.y, 0, gl.x, gl.y, r);
+        grad.addColorStop(0, `rgba(240,244,255,${0.22*a})`);
+        grad.addColorStop(0.6, `rgba(200,220,255,${0.09*a})`);
+        grad.addColorStop(1, `rgba(200,220,255,0)`);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(gl.x, gl.y, r, 0, Math.PI*2);
+        ctx.fill();
+        ctx.strokeStyle = `rgba(6,8,12,${0.22*a})`;
+        ctx.lineWidth = 10;
+        ctx.beginPath();
+        ctx.arc(gl.x, gl.y, r*0.85, 0, Math.PI*2);
+        ctx.stroke();
+      }
+    }
+
+    function drawQTE(){ const key=state.qte.current; const r = CONFIG.ui.ringRadius; const y = state.center.y - (r + CONFIG.ui.qteGap); const scale = 1 + Math.max(0,state.qte.justPopped) * (CONFIG.qte.appearScale - 1); ctx.save(); ctx.translate(state.center.x, y); ctx.scale(scale, scale); drawArrow(0,0, key); ctx.restore(); ctx.save(); ctx.globalAlpha=0.22; ctx.strokeStyle=PALETTE.arrowFill; ctx.lineWidth=2; for(let i=0;i<2;i++){ ctx.beginPath(); ctx.moveTo(state.center.x-26+i*10, y-20); ctx.lineTo(state.center.x+26-i*8, y+20); ctx.stroke(); } ctx.restore(); }
+
+    function drawArrow(x,y,key){ ctx.save(); ctx.translate(x,y); ctx.fillStyle = PALETTE.arrowFill; ctx.strokeStyle = PALETTE.arrowStroke; ctx.lineWidth=2; ctx.beginPath(); if(key==='ArrowUp'){ ctx.moveTo(0,-12); ctx.lineTo(12,6); ctx.lineTo(4,6); ctx.lineTo(4,14); ctx.lineTo(-4,14); ctx.lineTo(-4,6); ctx.lineTo(-12,6); } if(key==='ArrowDown'){ ctx.moveTo(0,14); ctx.lineTo(12,-4); ctx.lineTo(4,-4); ctx.lineTo(4,-12); ctx.lineTo(-4,-12); ctx.lineTo(-4,-4); ctx.lineTo(-12,-4); } if(key==='ArrowLeft'){ ctx.moveTo(-14,0); ctx.lineTo(4,-12); ctx.lineTo(4,-4); ctx.lineTo(12,-4); ctx.lineTo(12,4); ctx.lineTo(4,4); ctx.lineTo(4,12); } if(key==='ArrowRight'){ ctx.moveTo(14,0); ctx.lineTo(-4,-12); ctx.lineTo(-4,-4); ctx.lineTo(-12,-4); ctx.lineTo(-12,4); ctx.lineTo(-4,4); ctx.lineTo(-4,12); } ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.fillStyle = '#320b11'; for(let i=0;i<3;i++) pxRect(randRange(-10,10), 14 + Math.random()*6, 2, randRange(4,8)); ctx.restore(); }
+
+    function drawDissociationRing(){ const x=state.center.x, y=state.center.y, r=CONFIG.ui.ringRadius; ctx.save(); ctx.lineWidth=4; ctx.strokeStyle='rgba(50,60,70,0.6)'; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.stroke(); const pct=Math.max(0, Math.min(1, state.diss.meter/100)); ctx.strokeStyle = state.diss.active? PALETTE.dissRing : PALETTE.dissRingIdle; ctx.beginPath(); ctx.arc(x,y,r,-Math.PI/2, -Math.PI/2 + pct*Math.PI*2); ctx.stroke(); if(state.diss.active){ ctx.globalAlpha=0.18; ctx.fillStyle='rgba(140,160,190,0.3)'; ctx.beginPath(); ctx.arc(x,y,r+10,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1; } ctx.restore(); }
+
+    function drawHUD(){ const pad=14; ctx.save(); ctx.fillStyle='#dde3f4'; ctx.font='16px K2K-Pixel, monospace'; ctx.textBaseline='top'; ctx.textAlign='left'; let y = pad; ctx.fillText(`HP: ${state.hp}/${getMaxHP()}`, pad, y); y+=20; ctx.fillText(`Wave: ${Math.max(1,state.wave)}`, pad, y); y+=20; ctx.fillText(`Score: ${state.score}`, pad, y); y+=20; if(state.audio.mute){ ctx.fillStyle='#9c3a42'; ctx.fillText('Muted [M]', pad, y); y+=20; ctx.fillStyle='#dde3f4'; } const relics=[]; if(state.powerups.echoHeart) relics.push('Echo Heart'); if(state.powerups.fracturedFocus) relics.push('Fractured Focus'); if(state.powerups.glassVein) relics.push('Glass Vein'); if(relics.length){ ctx.fillText(`Relic: ${relics.join(', ')}`, pad, y); y+=20; } const bossEnemy = state.enemies.find(e=> (e.boss || e.mini) && !e.dead); if(bossEnemy){ const w=Math.min(canvas.width*0.5, 420), h=10; const x=canvas.width/2 - w/2, yb=18; const pct=Math.max(0, bossEnemy.hp/bossEnemy.maxHP); ctx.fillStyle='#120b10'; ctx.fillRect(x-2,yb-2,w+4,h+4); ctx.fillStyle='#23131a'; ctx.fillRect(x,yb,w,h); ctx.fillStyle='#6b2a38'; ctx.fillRect(x,yb,w*pct,h); ctx.fillStyle='#e7ecff'; ctx.font='14px K2K-Pixel, monospace'; ctx.textAlign='center'; ctx.fillText(bossEnemy.mini? 'MINIBOSS' : 'BOSS', x+w/2, yb-14); } if(state.breakTimer>0){ ctx.save(); ctx.fillStyle='rgba(120,150,180,0.75)'; ctx.font='bold 36px K2K-Pixel, monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(`WAVE ${state.wave}`, state.center.x, 56); ctx.restore(); } if(state.notif.t>0){ ctx.save(); ctx.globalAlpha=Math.max(0,state.notif.t); ctx.fillStyle='#e7f5ff'; ctx.font='bold 20px K2K-Pixel, monospace'; ctx.textAlign='center'; ctx.fillText(state.notif.text, state.center.x, state.center.y + 60); ctx.restore(); } ctx.restore(); }
+
+    function drawWhisper(){ if(!state.whisper.active) return; const t=state.whisper.t, dur=state.whisper.duration; let a=0; const fi=CONFIG.whisper.fadeIn, fo=CONFIG.whisper.fadeOut; if(t<fi) a=t/fi; else if(t>dur-fo) a=Math.max(0,(dur-t)/fo); else a=1; if(a<=0) return; const text=state.whisper.text; const size=state.whisper.fontPx; const y=Math.floor(state.center.y + canvas.height*0.25); ctx.save(); ctx.globalAlpha=Math.min(1,a); ctx.font=`${size}px K2K-Pixel, monospace`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle=CONFIG.whisper.shadow; ctx.fillText(text, state.center.x+1, y+1); ctx.fillStyle=CONFIG.whisper.color; ctx.fillText(text, state.center.x, y); ctx.restore(); }
+
+    // Menu background layer: scrolling whispers
+    function drawMenuBackground(){ updateMenuWhispers(state.dt); ctx.save(); drawMenuWhispers(); ctx.restore(); }
+
+    function drawOverlay(){ if(state.overlay.type==='relic'){ const opts=state.overlay.options; const pad=16; const w=Math.min(520, canvas.width*0.8); const x=canvas.width/2 - w/2; const y=canvas.height*0.65; ctx.save(); ctx.fillStyle='rgba(8,10,14,0.85)'; ctx.fillRect(x- pad, y-80, w+ pad*2, 160); ctx.strokeStyle='#2a2f3a'; ctx.strokeRect(x- pad, y-80, w+ pad*2, 160); ctx.font='bold 20px K2K-Pixel, monospace'; ctx.fillStyle='#e7ecf8'; ctx.textAlign='center'; ctx.fillText('Choose a Relic', canvas.width/2, y-54); const colW = w/Math.max(1,opts.length); for(let i=0;i<opts.length;i++){ const ox=x + i*colW + colW/2; const sel = (i===state.overlay.selected); ctx.font='bold 18px K2K-Pixel, monospace'; ctx.fillStyle= sel? '#ffffff' : '#d6dbea'; ctx.fillText(opts[i].title, ox, y-18); ctx.font='14px K2K-Pixel, monospace'; ctx.fillStyle= sel? '#cfe3ff' : '#b9bfcd'; wrapText(opts[i].desc, ox, y+6, colW-24, 16); if(sel){ ctx.strokeStyle='#9c3a42'; ctx.strokeRect(x + i*colW + 6, y-40, colW-12, 100); } } ctx.font='12px K2K-Pixel, monospace'; ctx.fillStyle='#9aa3b6'; ctx.fillText('← → choose   •   Enter confirm', canvas.width/2, y+78); ctx.restore(); } }
+
+    function wrapText(text, x, y, maxWidth, lineHeight){ const words=text.split(' '); let line=''; let yy=y; ctx.textAlign='center'; for(let n=0;n<words.length;n++){ const testLine=line + words[n] + ' '; const metrics=ctx.measureText(testLine); if(metrics.width > maxWidth && n>0){ ctx.fillText(line, x, yy); line=words[n] + ' '; yy += lineHeight; } else { line=testLine; } } ctx.fillText(line.trim(), x, yy); }
+
+    function drawMenu(){ banner('KEY 2 KILL', 'Enter = Start  •  Arrow Keys = QTE  •  R = Restart  •  M = Mute', true); }
+    function drawGameOver(){ banner('YOU FADE', `Score: ${state.score}  •  Wave: ${state.wave}\nPress R to retry`); }
+
+    function banner(title, subtitle='', blood=false){ ctx.save(); ctx.textAlign='center'; ctx.textBaseline='middle'; if(blood){ ctx.fillStyle='rgba(30,38,60,0.45)'; for(let i=0;i<20;i++){ const r=30+Math.random()*140; const a=Math.random()*Math.PI*2; ctx.beginPath(); ctx.ellipse(state.center.x + Math.cos(a)*r*0.6, state.center.y-40 + Math.sin(a)*r*0.4, r*0.8, r*0.3, a, 0, Math.PI*2); ctx.fill(); } } ctx.fillStyle='#e7ecf8'; ctx.font='bold 54px K2K-Pixel, monospace'; ctx.fillText(title, state.center.x, state.center.y - 30); ctx.font='18px K2K-Pixel, monospace'; for(const [i,line] of subtitle.split('\n').entries()) ctx.fillText(line, state.center.x, state.center.y + 20 + i*22); ctx.restore(); }
+
+    // ----------------------- UTILS -------------------------------
+    function randRange(a,b){ return a + Math.random()*(b-a); }
+    function pxRect(x,y,w,h){ ctx.fillRect(x|0, y|0, w|0, h|0); }
+    function normalizeAngle(a){ while(a>Math.PI) a-=Math.PI*2; while(a<-Math.PI) a+=Math.PI*2; return a; }
+    function shuffledIndices(n){ const arr = Array.from({length:n}, (_,i)=>i); for(let i=n-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [arr[i],arr[j]]=[arr[j],arr[i]]; } return arr; }
+
+    // Grain & menu whispers
+    function initMenuWhispers(){ state.menuWhispers.length = 0; const n = WHISPERS.length; for(let i=0;i<n;i++){ const text = WHISPERS[i]; const size = Math.floor(randRange(CONFIG.menu.minSize, CONFIG.menu.maxSize+1)); const a = randRange(CONFIG.menu.whisperAlpha[0], CONFIG.menu.whisperAlpha[1]); const speed = randRange(CONFIG.menu.minSpeed, CONFIG.menu.maxSpeed); const x = randRange(canvas.width*0.08, canvas.width*0.92); const y = randRange(0, canvas.height); state.menuWhispers.push({text,x,y,size,alpha:a,speed,drift:(Math.random()*10-5)}); } }
+    function updateMenuWhispers(dt){ for(const w of state.menuWhispers){ w.y -= w.speed * dt; w.x += w.drift * dt; if(w.y < -30){ w.y = canvas.height + randRange(10, 80); w.x = randRange(canvas.width*0.08, canvas.width*0.92); w.size = Math.floor(randRange(CONFIG.menu.minSize, CONFIG.menu.maxSize+1)); w.alpha = randRange(CONFIG.menu.whisperAlpha[0], CONFIG.menu.whisperAlpha[1]); w.speed = randRange(CONFIG.menu.minSpeed, CONFIG.menu.maxSpeed); } if(w.x < 0) w.x += canvas.width; if(w.x > canvas.width) w.x -= canvas.width; } }
+    function drawMenuWhispers(){ ctx.save(); ctx.textBaseline='middle'; ctx.textAlign='center'; for(const w of state.menuWhispers){ ctx.globalAlpha = w.alpha; ctx.font = `${w.size}px K2K-Pixel, monospace`; ctx.fillStyle = PALETTE.whisper; ctx.fillText(w.text, w.x, w.y); } ctx.restore(); }
+
+    // Film grain + flicker (subtle)
+    function drawGrainAndFlicker(){ const img = noiseCtx.createImageData(noiseLayer.width, noiseLayer.height); for(let i=0; i<img.data.length; i+=4){ const v = (Math.random()*255)|0; img.data[i]=v; img.data[i+1]=v; img.data[i+2]=v; img.data[i+3]=255; } noiseCtx.putImageData(img, 0, 0); const low = state.hp<=2; const base = CONFIG.fx.grainBase + (low? CONFIG.fx.grainLowHPBoost : 0); ctx.save(); ctx.globalAlpha = base; ctx.drawImage(noiseLayer, 0,0, noiseLayer.width, noiseLayer.height, 0,0, canvas.width, canvas.height); ctx.restore(); let flick = (low? (0.02*Math.sin(state.time*45) + 0.015*Math.random()) : 0.008*Math.random()); flick = Math.max(0, flick) + state.fx.glitch; flick = Math.min(CONFIG.fx.flickerLowHPMax, flick); if(flick>0){ ctx.save(); ctx.fillStyle = `rgba(0,0,0,${flick})`; ctx.fillRect(0,0,canvas.width, canvas.height); ctx.restore(); } }
+
+    function resize(){ const dpr=CONFIG.dpr; const w=Math.floor(window.innerWidth*dpr); const h=Math.floor(window.innerHeight*dpr); canvas.width=w; canvas.height=h; bloodLayer.width=w; bloodLayer.height=h; state.width=w; state.height=h; state.center.x=w/2; state.center.y=h/2; if(state.inMenu) initMenuWhispers(); }
+    window.addEventListener('resize', resize); resize(); initMenuWhispers(); requestAnimationFrame(loop);
+
+    // ===================== BLOOD RAIN =====================
+    function spawnRainDrop(){
+  // Slumpa en träffpunkt var som helst i spelplanen
+  const impactX = randRange(0, state.width);
+  const impactY = randRange(0, state.height);
+
+  // Starta en bit ovanför träffpunkten (kort fallsträcka -> top-down-känsla)
+  const fall = randRange(CONFIG.rain.fallDist[0], CONFIG.rain.fallDist[1]);
+  const startX = impactX + randRange(-4, 4);   // lite variation
+  const startY = impactY - fall;
+
+  const vy = randRange(CONFIG.rain.speed[0], CONFIG.rain.speed[1]);
+  const vx = randRange(CONFIG.rain.windX[0], CONFIG.rain.windX[1]); // sidvind
+  const len = randRange(CONFIG.rain.len[0], CONFIG.rain.len[1]);
+
+  state.rain.drops.push({ x:startX, y:startY, vx, vy, len, impactX, impactY });
+}
+
+function updateRain(dt){
+  // Intensitet baserad på wave
+  const w = Math.max(0, state.wave - (CONFIG.rain.startWave - 1)); // 0 före wave 9
+  const rate = (w>0) ? CONFIG.rain.baseRate + CONFIG.rain.ratePerWave*(w-1) : 0; // droppar/sek
+
+  // Om du vill att regnet bara ska vara aktivt under vågor (inte i pausen):
+  // if (state.breakTimer > 0) return;
+
+  // Spawna droppar
+  state.rain.spawnCarry += rate * dt;
+  let spawnCount = Math.floor(state.rain.spawnCarry);
+  state.rain.spawnCarry -= spawnCount;
+  spawnCount = Math.min(spawnCount, 40); // safety
+
+  while (spawnCount-- > 0 && state.rain.drops.length < CONFIG.rain.maxDrops){
+    spawnRainDrop();
+  }
+
+  // Uppdatera rörelse + mark-splash
+  const drops = state.rain.drops;
+  for (let i=drops.length-1;i>=0;i--){
+    const d = drops[i];
+    d.y += d.vy * dt;
+
+    if (d.y >= d.impactY){
+  const gx = d.x | 0;
+  const gy = Math.min(state.height - 3, Math.max(3, d.impactY | 0));
+
+  bloodCtx.save();
+  bloodCtx.globalCompositeOperation = 'source-over';
+
+  // Baspöl – lite starkare än vanliga splatter
+  bloodCtx.globalAlpha = Math.min(0.32, CONFIG.gore.poolAlpha * 2.4);
+  bloodCtx.fillStyle = PALETTE.ink;
+  bloodCtx.beginPath();
+  bloodCtx.ellipse(gx, gy, randRange(10, 20), randRange(4, 9), Math.random()*Math.PI, 0, Math.PI*2);
+  bloodCtx.fill();
+
+  // Några extra “stänk” runt träffen för att synas bättre
+  const splats = 3 + (Math.random()*3|0);
+  for (let k=0; k<splats; k++){
+    const rx = randRange(-12, 12);
+    const ry = randRange(-6, 6);
+    bloodCtx.beginPath();
+    bloodCtx.ellipse(gx + rx, gy + ry, randRange(5, 11), randRange(2, 6), Math.random()*Math.PI, 0, Math.PI*2);
+    bloodCtx.fill();
+  }
+
+  bloodCtx.restore();
+
+  // räkna träffar och ta bort droppen
+  state.rain.hits++;
+  drops.splice(i,1);
+}
+  }
+}
+
+function drawRain(){
+  if (!state.rain.drops.length) return;
+  ctx.save();
+  ctx.strokeStyle = `rgba(120,20,26,${CONFIG.rain.alpha})`; // blodig röd ton
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  for (const d of state.rain.drops){
+    const m = Math.hypot(d.vx, d.vy) || 1;
+  const bx = d.x - (d.vx / m) * d.len;
+  const by = d.y - (d.vy / m) * d.len;
+
+  ctx.beginPath();
+  ctx.moveTo(d.x, d.y);
+  ctx.lineTo(bx, by);
+  ctx.stroke();
+  }
+  ctx.restore();
+}
+
+    // ----------------------- BEEPS (SFX) -------------------------
+    function beep(type='shot', vol=1, freq=200){ if(!state.audio.ctx || state.audio.mute) return; const ac = state.audio.ctx; const t = ac.currentTime; const o = ac.createOscillator(); const g = ac.createGain(); const f = ac.createBiquadFilter(); o.type = (type==='hurt') ? 'triangle' : (type==='splat' ? 'triangle' : (type==='boss'?'square':'sine')); o.frequency.setValueAtTime(freq, t); f.type = 'lowpass'; f.frequency.value = (type==='shot')? 1400 : (type==='splat'? 900 : 650); g.gain.value = 0.33 * vol; o.connect(g); g.connect(f); f.connect(ac.destination); const dur = (type==='shot')? 0.06 : (type==='splat'? 0.09 : (type==='boss'?0.18:0.12)); g.gain.exponentialRampToValueAtTime(0.0001, t + dur); o.start(t); o.stop(t + dur); }
+
+    // ----------------------- SELF-TESTS --------------------------
+    ;(function selfTests(){
+      try {
+        console.assert(typeof drawGlints === 'function', 'drawGlints should be defined');
+        const before = state.glints.length; addGlint(); console.assert(state.glints.length === before+1, 'addGlint should push a glint'); state.glints.pop();
+        console.log('[K2K v13] Self-tests passed.');
+      } catch (err) {
+        console.warn('[K2K v13] Self-tests encountered an issue:', err);
+      }
+    })();
+
+  </script>
+</body>
+</html>
