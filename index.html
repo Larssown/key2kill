@@ -15,6 +15,17 @@
   <!-- Loopande bakgrundsmusik -->
 <audio id="bgm" src="bgm.mp3" loop preload="auto" style="display:none"></audio>
 <audio id="sfx-shot" src="shot.mp3" preload="auto"></audio>
+<audio id="sfx-reload" src="reloud.mp3" preload="auto"></audio>
+<audio id="sfx-miss-please" src="please.mp3" preload="auto"></audio>
+<audio id="sfx-miss-stopit" src="stopit.mp3" preload="auto"></audio>
+<audio id="sfx-miss-noway" src="noway.mp3" preload="auto"></audio>
+<audio id="sfx-miss-whyme" src="whyme.mp3" preload="auto"></audio>
+<audio id="sfx-miss-dont" src="dont.mp3" preload="auto"></audio>
+<audio id="sfx-miss-ow" src="ow.mp3" preload="auto"></audio>
+<audio id="sfx-miss-stop" src="stop.mp3" preload="auto"></audio>
+<audio id="sfx-miss-why" src="why.mp3" preload="auto"></audio>
+<audio id="sfx-miss-no" src="no.mp3" preload="auto"></audio>
+<audio id="sfx-miss-ouch" src="ouch.mp3" preload="auto"></audio>
   <script>
     // =============================================================
     //  KEY 2 KILL — v13 (No music)
@@ -81,7 +92,18 @@ windX: [-50, 50]     // sidvind (px/s) för lite diagonalkänsla
     const noiseLayer = document.createElement('canvas'); noiseLayer.width = 128; noiseLayer.height = 128;
     const noiseCtx = noiseLayer.getContext('2d', { willReadFrequently: true });
     // --- MUSIC (BGM) ---
-const bgm = document.getElementById('bgm'); const sfxShot = document.getElementById('sfx-shot');
+const bgm = document.getElementById('bgm'); const sfxShot = document.getElementById('sfx-shot'); const sfxReload = document.getElementById('sfx-reload'); const missSounds = [
+  document.getElementById('sfx-miss-please'),
+  document.getElementById('sfx-miss-stopit'),
+  document.getElementById('sfx-miss-noway'),
+  document.getElementById('sfx-miss-whyme'),
+  document.getElementById('sfx-miss-dont'),
+  document.getElementById('sfx-miss-ow'),
+  document.getElementById('sfx-miss-stop'),
+  document.getElementById('sfx-miss-why'),
+  document.getElementById('sfx-miss-no'),
+  document.getElementById('sfx-miss-ouch'),
+];
 function startMusic() {
   if (!bgm) return;
   bgm.volume = 0.35;        // lagom volym
@@ -96,6 +118,42 @@ function playShot() {
   sfxShot.volume = 0.1;         // justera volym
   sfxShot.play().catch(()=>{});
 }
+function playReload(){
+  if (!sfxReload) return;
+  if (state.audio.mute) return;
+  sfxReload.currentTime = 0;
+  sfxReload.volume = 0.25; // justera volym efter smak
+  sfxReload.play().catch(()=>{});
+}
+function playMiss(){
+  if(state.audio.mute) return;
+  const pick = missSounds[(Math.random() * missSounds.length) | 0];
+  pick.currentTime = 0;
+  pick.volume = 0.4; // justera volym
+  pick.play().catch(()=>{});
+}
+
+// --- ASSETS: player directional sprites ---
+const playerSprites = {};
+const playerReady = {};
+function loadPlayerSprite(key, src){
+  const img = new Image();
+  img.onload = () => { playerReady[key] = true; };
+  img.src = src;
+  playerSprites[key] = img;
+}
+
+// --- ASSETS: enemy sprite ---
+const enemyImg = new Image();
+let enemyImgReady = false;
+enemyImg.onload = () => { enemyImgReady = true; };
+enemyImg.src = "enemy.png"; // se till att filen ligger bredvid index.html
+
+// Dina filer
+loadPlayerSprite('down',  'player48x82.png');       
+loadPlayerSprite('up',    'player48x82_up.png');    
+loadPlayerSprite('right', 'player48x82_right.png'); 
+loadPlayerSprite('left',  'player48x82_left.png');  
 
     const state = {
       running:false, inMenu:true, gameOver:false,
@@ -121,6 +179,12 @@ function playShot() {
       rain:{ drops:[], spawnCarry:0, hits:0 }
     };
 
+    // --- ASSETS: umbrella image for start menu ---
+const umbrellaImg = new Image();
+let umbrellaReady = false;
+umbrellaImg.onload = () => { umbrellaReady = true; };
+umbrellaImg.src = "umbrella.png"; // se till att filen ligger bredvid index.html
+
     // ----------------------- AUDIO (SFX only) --------------------
     function initAudio(){ if(state.audio.ctx) return; try{ state.audio.ctx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
 
@@ -133,7 +197,11 @@ function playShot() {
         else if(e.key==='Enter'){ const pick = state.overlay.options[state.overlay.selected]; applyRelic(pick.id); state.overlay.type = null; state.notif = { t:1.2, text:`RELIC ACQUIRED: ${pick.title.toUpperCase()}`}; }
         return;
       }
-      if(e.key==='Enter' && state.inMenu){ startGame(); return; }
+      if(e.key==='Enter' && state.inMenu){
+  playReload();   // <--- spela laddljudet
+  startGame();
+  return;
+}
       if(e.key==='R' || e.key==='r'){ restart(); return; }
       if (e.key==='M' || e.key==='m') {
   state.audio.mute = !state.audio.mute;
@@ -153,7 +221,7 @@ function playShot() {
 
     // ----------------------- QTE SYSTEM --------------------------
     function nextQTE(init=false){ const keys = CONFIG.qte.keys; if(init){ state.qte.current = keys[(Math.random()*keys.length)|0]; state.qte.justPopped=0.10; return; } let k; do { k = keys[(Math.random()*keys.length)|0]; } while (k === state.qte.current); state.qte.current=k; state.qte.justPopped=0.10; }
-    function handleQTE(key){ if(state.inputLocked) return; if(key !== state.qte.current){ if(state.diss.active && state.diss.grace>0){ /* first miss ignored */ } else { if(state.powerups.fracturedFocus && state.mods.qteMissNullifyCooldown<=0){ state.mods.qteMissNullifyCooldown=5.0; state.notif={t:0.7,text:'MISS NULLIFIED'}; } else { state.qte.combo=0; if(!state.diss.active && state.diss.cooldown<=0) state.diss.meter = Math.max(0, state.diss.meter - CONFIG.qte.wrongMeterPenalty); hurtPlayer(CONFIG.qte.wrongDamage, true); } state.inputLocked=true; setTimeout(()=> state.inputLocked=false, 100); } nextQTE(); return; } state.qte.combo++; const mult = (state.diss.active? CONFIG.diss.scoreMult : 1) * (1+state.mods.scoreMultBonus); playShot(); fireShot(); state.score += Math.floor(CONFIG.score.hit * mult); if(!state.diss.active && state.diss.cooldown<=0){ state.diss.meter = Math.min(100, state.diss.meter + CONFIG.diss.gainPerHit); if(state.diss.meter>=100) activateDiss(); } nextQTE(); }
+    function handleQTE(key){ if(state.inputLocked) return; if(key !== state.qte.current){ if(state.diss.active && state.diss.grace>0){ /* first miss ignored */ } else { if(state.powerups.fracturedFocus && state.mods.qteMissNullifyCooldown<=0){ state.mods.qteMissNullifyCooldown=5.0; state.notif={t:0.7,text:'MISS NULLIFIED'}; } else { state.qte.combo=0; if(!state.diss.active && state.diss.cooldown<=0) state.diss.meter = Math.max(0, state.diss.meter - CONFIG.qte.wrongMeterPenalty); playMiss(); hurtPlayer(CONFIG.qte.wrongDamage, true); } state.inputLocked=true; setTimeout(()=> state.inputLocked=false, 100); } nextQTE(); return; } state.qte.combo++; const mult = (state.diss.active? CONFIG.diss.scoreMult : 1) * (1+state.mods.scoreMultBonus); playShot(); fireShot(); qteBurst(); state.score += Math.floor(CONFIG.score.hit * mult); if(!state.diss.active && state.diss.cooldown<=0){ state.diss.meter = Math.min(100, state.diss.meter + CONFIG.diss.gainPerHit); if(state.diss.meter>=100) activateDiss(); } nextQTE(); }
     function activateDiss(){ state.diss.active=true; state.diss.grace = CONFIG.diss.graceOnActivate; state.bannerFlash=0.6; beep('boss',0.5,105); state.notif={t:0.9,text:'DISSOCIATION'}; }
 
     // ----------------------- ENTITIES ----------------------------
@@ -177,7 +245,30 @@ function playShot() {
     function splatterAt(x,y,heavy=false,intensity=1){ const [minP,maxP] = heavy? CONFIG.gore.particlesPerKill : CONFIG.gore.particlesPerHit; const count = Math.floor(randRange(minP,maxP)*intensity); for(let i=0;i<count;i++){ const a=Math.random()*Math.PI*2; const sp= heavy? randRange(120,210): randRange(70,140); state.particles.push(makeParticle(x,y,Math.cos(a)*sp,Math.sin(a)*sp,randRange(0.35,0.8))); } bloodCtx.save(); bloodCtx.globalAlpha = CONFIG.gore.poolAlpha * (heavy?1.8:1.0) * intensity; bloodCtx.fillStyle = PALETTE.ink; for(let i=0;i<(heavy?6:3);i++){ const rx=randRange(-10,10), ry=randRange(-10,10); const w=randRange(16,28)*(heavy?1.3:1.0); const h=randRange(6,14)*(heavy?1.3:1.0); bloodCtx.beginPath(); bloodCtx.ellipse(x+rx, y+ry, w, h, Math.random()*Math.PI, 0, Math.PI*2); bloodCtx.fill(); } bloodCtx.restore(); }
     function splatterAlongRay(x1,y1,x2,y2){ const dx=x2-x1, dy=y2-y1; const len=Math.hypot(dx,dy); const steps=Math.max(3, Math.floor(len/30)); for(let i=1;i<steps;i++){ const t=i/steps; const x=x1+dx*t+randRange(-3,3); const y=y1+dy*t+randRange(-3,3); if(Math.random()<0.4) state.particles.push(makeParticle(x,y,randRange(-50,50),randRange(-50,50),randRange(0.12,0.3))); } }
     function dropGibs(x,y){ const n=Math.floor(randRange(CONFIG.gore.gibCount[0], CONFIG.gore.gibCount[1])); for(let i=0;i<n;i++){ const a=Math.random()*Math.PI*2; const sp=randRange(110,200); state.gibs.push({ x,y,vx:Math.cos(a)*sp, vy:Math.sin(a)*sp - randRange(25,70), ang:Math.random()*Math.PI*2, va:randRange(-6,6), size:randRange(6,12), life:randRange(0.9,1.6) }); } }
+// QTE-blood pop (liten, snabb)
+function qteBurst(){
+  // Samma position som QTE-pilen ritas på:
+  const x = state.center.x;
+  const y = state.center.y - (CONFIG.ui.ringRadius + CONFIG.ui.qteGap);
 
+  // 18–28 snabba droppar, lite ljusare röd ton
+  const n = (Math.random()*10 + 18) | 0;
+  for (let i=0;i<n;i++){
+    const a  = Math.random()*Math.PI*2;
+    const sp = 160 + Math.random()*120;      // hastighet
+    const vx = Math.cos(a)*sp;
+    const vy = Math.sin(a)*sp;
+    const life = 0.25 + Math.random()*0.35;  // kort livslängd
+
+    // makeParticle(x,y,vx,vy,life, r,g,b)
+    state.particles.push(
+      makeParticle(x, y, vx, vy, life, 150+Math.random()*30, 8+Math.random()*12, 12+Math.random()*18)
+    );
+  }
+
+  // (valfritt) liten ringglimt för extra respons
+  state.glints.push({ x, y, t:0, life:0.18 });
+}
     // ----------------------- WAVES & RELICS ----------------------
     function nextWave(){ state.wave++; state.hp = getMaxHP(); state.notif = { t: 0.9, text: 'FULL HEALTH' }; state.breakTimer = CONFIG.wave.breakTime; state.isBossWave = (state.wave % 10 === 0); state.isMiniBossWave = (!state.isBossWave) && (state.wave % 5 === 0); setupWhisperForBreak(); if(state.isBossWave){ state.spawnQueue=0; state.spawnTimer=0; setTimeout(spawnBoss, 200); } else if(state.isMiniBossWave){ state.spawnQueue=0; state.spawnTimer=0; setTimeout(spawnMiniBoss, 200); } else { const toSpawn = CONFIG.wave.startEnemies + CONFIG.wave.addPerWave*(state.wave-1); state.spawnQueue = toSpawn; state.spawnTimer=0.0; } state.score += CONFIG.score.waveBonus; }
 
@@ -192,13 +283,70 @@ function playShot() {
     function updateGame(dt){ if(state.qte.justPopped>0) state.qte.justPopped-=dt; if(state.bannerFlash>0) state.bannerFlash-=dt; if(state.diss.active){ state.diss.meter -= CONFIG.diss.drainPerSec * state.mods.dissDrainMult * dt; state.diss.grace -= dt; if(state.diss.grace<0) state.diss.grace=0; if(state.diss.meter<=0){ state.diss.active=false; state.diss.meter=0; state.diss.cooldown = CONFIG.diss.cooldown; } } else if(state.diss.cooldown>0){ state.diss.cooldown -= dt; if(state.diss.cooldown<0) state.diss.cooldown=0; } if(state.mods.qteMissNullifyCooldown>0) state.mods.qteMissNullifyCooldown -= dt; if(state.breakTimer>0){ state.breakTimer -= dt; if(state.whisper.active){ state.whisper.t += dt; if(state.whisper.t>=state.whisper.duration) state.whisper.active=false; } } else { if(!state.isBossWave && !state.isMiniBossWave){ if(state.spawnQueue>0){ state.spawnTimer -= dt; if(state.spawnTimer<=0){ spawnEnemy(); state.spawnQueue--; state.spawnTimer = CONFIG.wave.spawnInterval * (0.95 ** (state.wave-1)); } } } } const cx=state.center.x, cy=state.center.y; const speedScale= state.diss.active? CONFIG.diss.enemySpeedScale : 1.0; for(const e of state.enemies){ if(e.dead) continue; const dx=cx-e.x, dy=cy-e.y; const d=Math.hypot(dx,dy)||1; const sp=(e.speed*speedScale)*dt; e.x += (dx/d)*sp; e.y += (dy/d)*sp; const typeSize = e.boss? CONFIG.boss.size*0.5 : (e.mini? CONFIG.miniboss.size*0.5 : 6); const touchR = typeSize + CONFIG.player.radius; if(Math.hypot(e.x-cx, e.y-cy) < touchR){ const touchDmg = e.boss? CONFIG.boss.touchDamage : (e.mini? CONFIG.miniboss.touchDamage : 1); hurtPlayer(touchDmg); if(e.boss || e.mini){ const nx=-dx/d, ny=-dy/d; e.x += nx*18; e.y += ny*18; } else { e.dead=true; splatterAt(e.x,e.y,true); dropGibs(e.x,e.y); } } } state.enemies = state.enemies.filter(e=>!e.dead); const bossAlive = state.enemies.some(e=> (e.boss || e.mini) && !e.dead); const waveDone = (state.breakTimer<=0) && (state.spawnQueue===0) && (!bossAlive) && (state.enemies.length===0); if(waveDone){ if(state.isMiniBossWave || state.isBossWave){ maybeOfferRelic(); } nextWave(); } const g=CONFIG.gore.gravity; for(const p of state.particles){ p.vx*=CONFIG.gore.drag; p.vy*=CONFIG.gore.drag; p.vy += g*dt; p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt; if(p.life<=0){ bloodCtx.save(); bloodCtx.globalAlpha=0.14; bloodCtx.fillStyle = `rgb(${p.r|0},${p.g|0},${p.b|0})`; bloodCtx.fillRect(p.x,p.y,p.size,p.size); bloodCtx.restore(); } } if(state.particles.length>CONFIG.gore.maxParticles) state.particles.splice(0, state.particles.length - CONFIG.gore.maxParticles); state.particles = state.particles.filter(p=>p.life>0); for(const gB of state.gibs){ gB.vx*=0.992; gB.vy*=0.992; gB.vy += g*dt; gB.x += gB.vx*dt; gB.y += gB.vy*dt; gB.ang += gB.va*dt; gB.life -= dt*0.25; if(gB.life<=0){ bloodCtx.save(); bloodCtx.globalAlpha=0.18; bloodCtx.fillStyle = PALETTE.ink; bloodCtx.translate(gB.x,gB.y); bloodCtx.rotate(gB.ang); bloodCtx.fillRect(-gB.size*0.7,-gB.size*0.3,gB.size*1.4,gB.size*0.6); bloodCtx.restore(); } } state.gibs = state.gibs.filter(gb=>gb.life>0); for(const gl of state.glints){ gl.t += dt; } state.glints = state.glints.filter(gl=> gl.t < gl.life); if(state.hp<=2){ if(Math.random()<0.015) state.fx.glitch = 0.10; } state.fx.glitch *= 0.9; state.target = nearestEnemy(); if(state.notif.t>0) state.notif.t -= dt; updateRain(dt); if(state.gameOver) return; }
 
     // ----------------------- RENDER ------------------------------
-    function render(){ ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width, canvas.height); ctx.save(); ctx.translate(state.cam.x, state.cam.y); drawArena(); ctx.drawImage(bloodLayer,0,0); drawRain(); for(const e of state.enemies) drawEnemy(e); drawPlayer(); for(const p of state.particles) drawParticle(p); drawGlints(); if(!state.inMenu && !state.gameOver){ drawDissociationRing(); drawQTE(); } ctx.restore(); drawGrainAndFlicker(); drawHUD(); if(!state.inMenu && !state.gameOver) drawWhisper(); if(state.inMenu) { drawMenuBackground(); drawMenu(); } else if(state.gameOver) drawGameOver(); if(state.overlay.type) drawOverlay(); }
+    function render(){ ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width, canvas.height); ctx.save(); ctx.translate(state.cam.x, state.cam.y); drawArena();
+ctx.drawImage(bloodLayer,0,0);
+drawRain();
+for(const e of state.enemies) drawEnemy(e);
+// if(!state.inMenu)   <-- om du redan gömmer spelaren i menyn
+//   drawPlayer();     <-- flytta detta NEDANFÖR som i blocket nedan
+for(const p of state.particles) drawParticle(p);
+drawGlints();
+if(!state.inMenu && !state.gameOver){
+  drawDissociationRing();
+  // gör pilarna stilla genom att neutralisera kameraskak
+  ctx.save();
+  ctx.translate(-state.cam.x, -state.cam.y);
+  drawQTE();
+  ctx.restore();
+}
+
+drawGrainAndFlicker();         // <-- LÄGG TILL HÄR
+
+if(!state.inMenu) drawPlayer(); // <-- OCH FLYTTA HIT
+ctx.restore();
+drawHUD(); if(!state.inMenu && !state.gameOver) drawWhisper(); if(state.inMenu) { drawMenuBackground(); drawMenu(); } else if(state.gameOver) drawGameOver(); if(state.overlay.type) drawOverlay(); }
 
     function drawArena(){ const w=canvas.width, h=canvas.height; const grad = ctx.createRadialGradient(state.center.x, state.center.y, 60, state.center.x, state.center.y, Math.max(w,h)*0.75); grad.addColorStop(0, PALETTE.bg1); grad.addColorStop(1, '#07090f'); ctx.fillStyle = grad; ctx.fillRect(0,0,w,h); ctx.globalAlpha=0.13; ctx.fillStyle=PALETTE.grid; for(let x=0;x<w;x+=24) ctx.fillRect(x,0,1,h); for(let y=0;y<h;y+=24) ctx.fillRect(0,y,w,1); ctx.globalAlpha=1; const vg = ctx.createRadialGradient(state.center.x, state.center.y, Math.min(w,h)*0.45, state.center.x, state.center.y, Math.max(w,h)*0.85); vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1, PALETTE.vignette); ctx.fillStyle=vg; ctx.fillRect(0,0,w,h); if(state.diss.active){ ctx.fillStyle=PALETTE.dissTint; ctx.fillRect(0,0,w,h); } if(state.hp<=2){ ctx.fillStyle=PALETTE.lowHPTint; ctx.fillRect(0,0,w,h); } }
 
-    function drawPlayer(){ const x=state.center.x, y=state.center.y; const t=state.target; const ang = t? Math.atan2(t.y - y, t.x - x) : 0; ctx.save(); ctx.translate(x,y); if(state.bannerFlash>0){ ctx.globalAlpha = Math.max(0, state.bannerFlash); ctx.fillStyle='rgba(255,255,255,0.16)'; ctx.beginPath(); ctx.arc(0,0,58,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1; } const breathe = Math.sin(state.time*1.6)*0.5; ctx.fillStyle = PALETTE.playerBody; pxRect(-7, -12 + breathe, 14, 24); ctx.beginPath(); ctx.fillStyle=PALETTE.playerBody; ctx.arc(0, -20 + breathe, 6, 0, Math.PI*2); ctx.fill(); ctx.fillStyle = PALETTE.playerVoid; pxRect(-2, -8 + breathe, 4, 8); ctx.rotate(ang); ctx.fillStyle = '#2c313e'; pxRect(6, -2, 10, 4); ctx.restore(); }
+    function drawPlayer(){
+  const x = state.center.x;
+  const y = state.center.y;
 
-    function drawEnemy(e){ ctx.save(); ctx.translate(e.x, e.y); if(e.boss){ ctx.fillStyle = PALETTE.boss; const w = CONFIG.boss.size*1.2, h = CONFIG.boss.size*2.2; pxRect(-w/2, -h/2, w, h); ctx.globalAlpha=0.2; ctx.fillStyle='#000'; for(let i=-w/2+2;i<w/2;i+=6){ pxRect(i|0, (-h/2)|0, 1, h|0); } ctx.globalAlpha=1; } else if(e.mini){ ctx.fillStyle = PALETTE.miniBoss; const w = CONFIG.miniboss.size*1.2, h = CONFIG.miniboss.size*2.0; pxRect(-w/2, -h/2, w, h); ctx.globalAlpha=0.18; ctx.fillStyle='#000'; for(let i=-w/2+2;i<w/2;i+=7){ pxRect(i|0, (-h/2)|0, 1, h|0); } ctx.globalAlpha=1; } else { const tough = e.hp>=2; ctx.fillStyle = tough? PALETTE.shadeTough : PALETTE.shade; const w=10, h=20; pxRect(-w/2, -h/2, w, h); ctx.globalAlpha=0.12; pxRect((-w/2-1)|0, (-h/2)|0, 1, h|0); pxRect((w/2)|0, (-h/2)|0, 1, h|0); ctx.globalAlpha=1; } if(e.bleed>0){ ctx.globalAlpha = Math.max(0, e.bleed); ctx.strokeStyle = PALETTE.bleedRing; ctx.lineWidth=2; ctx.beginPath(); const rr = e.boss? CONFIG.boss.size+6 : (e.mini? CONFIG.miniboss.size+6 : 10); ctx.arc(0,0,rr,0,Math.PI*2); ctx.stroke(); ctx.globalAlpha=1; e.bleed -= 0.02; } ctx.restore(); }
+  const dir = getFacingDir();
+  const img =
+    (playerSprites[dir] && playerReady[dir]) ? playerSprites[dir]
+    : (playerReady['down'] ? playerSprites['down'] : null);
+
+  if(!img) return;
+
+  ctx.save();
+  ctx.translate(x, y);
+
+  if(state.bannerFlash>0){
+    ctx.globalAlpha = Math.max(0, state.bannerFlash);
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.beginPath();
+    ctx.arc(0,0,58,0,Math.PI*2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.drawImage(img, -img.width/2, -img.height/2);
+  ctx.restore();
+}
+
+    function drawEnemy(e){ ctx.save(); ctx.translate(e.x, e.y); if(e.boss){ ctx.fillStyle = PALETTE.boss; const w = CONFIG.boss.size*1.2, h = CONFIG.boss.size*2.2; pxRect(-w/2, -h/2, w, h); ctx.globalAlpha=0.2; ctx.fillStyle='#000'; for(let i=-w/2+2;i<w/2;i+=6){ pxRect(i|0, (-h/2)|0, 1, h|0); } ctx.globalAlpha=1; } else if(e.mini){ ctx.fillStyle = PALETTE.miniBoss; const w = CONFIG.miniboss.size*1.2, h = CONFIG.miniboss.size*2.0; pxRect(-w/2, -h/2, w, h); ctx.globalAlpha=0.18; ctx.fillStyle='#000'; for(let i=-w/2+2;i<w/2;i+=7){ pxRect(i|0, (-h/2)|0, 1, h|0); } ctx.globalAlpha=1; } else {
+  // Vanliga fiender: rita din PNG i stället
+  if (enemyImgReady) {
+    const w = 48;      // justera efter din enemy.png
+    const h = 48;      // t.ex. 32/32 eller 64/64
+    ctx.drawImage(enemyImg, -w/2, -h/2, w, h);
+  } else {
+    // Fallback om bilden inte hunnit ladda
+    ctx.fillStyle = '#a00';
+    ctx.fillRect(-10, -10, 20, 20);
+  }
+} if(e.bleed>0){ ctx.globalAlpha = Math.max(0, e.bleed); ctx.strokeStyle = PALETTE.bleedRing; ctx.lineWidth=2; ctx.beginPath(); const rr = e.boss? CONFIG.boss.size+6 : (e.mini? CONFIG.miniboss.size+6 : 10); ctx.arc(0,0,rr,0,Math.PI*2); ctx.stroke(); ctx.globalAlpha=1; e.bleed -= 0.02; } ctx.restore(); }
 
     function drawParticle(p){ ctx.fillStyle = `rgb(${p.r|0},${p.g|0},${p.b|0})`; ctx.fillRect(p.x, p.y, p.size, p.size); }
 
@@ -240,7 +388,31 @@ function playShot() {
 
     function wrapText(text, x, y, maxWidth, lineHeight){ const words=text.split(' '); let line=''; let yy=y; ctx.textAlign='center'; for(let n=0;n<words.length;n++){ const testLine=line + words[n] + ' '; const metrics=ctx.measureText(testLine); if(metrics.width > maxWidth && n>0){ ctx.fillText(line, x, yy); line=words[n] + ' '; yy += lineHeight; } else { line=testLine; } } ctx.fillText(line.trim(), x, yy); }
 
-    function drawMenu(){ banner('KEY 2 KILL', 'Enter = Start  •  Arrow Keys = QTE  •  R = Restart  •  M = Mute', true); }
+    function drawMenu(){
+  // 1) Rita titeln först
+  banner(
+    'KEY 2 KILL',
+    'Enter = Start  •  Arrow Keys = QTE  •  R = Restart  •  M = Mute',
+    false
+  );
+
+  // 2) Rita paraply-bilden strax ovanför titeln (med korrekt proportioner)
+  if (umbrellaReady){
+    const titleFontPx = 54;            // samma som i banner()
+    const titleY       = state.center.y - 30; // samma som i banner()
+    const gap          = 5;            // luft mellan titel och paraply
+
+    const targetW = 150;                            // önskad bredd
+    const aspect  = umbrellaImg.height / umbrellaImg.width;
+    const targetH = targetW * aspect;               // behåll proportioner
+
+    const topOfTitle = titleY - titleFontPx/2;      // ungefärlig topp av titeltexten
+    const x = state.center.x - targetW/2;
+    const y = topOfTitle - gap - targetH;           // placera ovanför titeln
+
+    ctx.drawImage(umbrellaImg, x, y, targetW, targetH);
+  }
+}
     function drawGameOver(){ banner('YOU FADE', `Score: ${state.score}  •  Wave: ${state.wave}\nPress R to retry`); }
 
     function banner(title, subtitle='', blood=false){ ctx.save(); ctx.textAlign='center'; ctx.textBaseline='middle'; if(blood){ ctx.fillStyle='rgba(30,38,60,0.45)'; for(let i=0;i<20;i++){ const r=30+Math.random()*140; const a=Math.random()*Math.PI*2; ctx.beginPath(); ctx.ellipse(state.center.x + Math.cos(a)*r*0.6, state.center.y-40 + Math.sin(a)*r*0.4, r*0.8, r*0.3, a, 0, Math.PI*2); ctx.fill(); } } ctx.fillStyle='#e7ecf8'; ctx.font='bold 54px K2K-Pixel, monospace'; ctx.fillText(title, state.center.x, state.center.y - 30); ctx.font='18px K2K-Pixel, monospace'; for(const [i,line] of subtitle.split('\n').entries()) ctx.fillText(line, state.center.x, state.center.y + 20 + i*22); ctx.restore(); }
@@ -250,7 +422,25 @@ function playShot() {
     function pxRect(x,y,w,h){ ctx.fillRect(x|0, y|0, w|0, h|0); }
     function normalizeAngle(a){ while(a>Math.PI) a-=Math.PI*2; while(a<-Math.PI) a+=Math.PI*2; return a; }
     function shuffledIndices(n){ const arr = Array.from({length:n}, (_,i)=>i); for(let i=n-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [arr[i],arr[j]]=[arr[j],arr[i]]; } return arr; }
+    let lastFace = 'down';
 
+function getFacingDir(){
+  const t = state.target;
+  if(!t) return lastFace;
+
+  const dx = t.x - state.center.x;
+  const dy = t.y - state.center.y;
+  const ax = Math.abs(dx), ay = Math.abs(dy);
+
+  if (Math.abs(ax - ay) < 6) return lastFace; // deadzone för diagonaler
+
+  if (ax > ay) {
+    lastFace = dx > 0 ? 'right' : 'left';
+  } else {
+    lastFace = dy > 0 ? 'down' : 'up';
+  }
+  return lastFace;
+}
     // Grain & menu whispers
     function initMenuWhispers(){ state.menuWhispers.length = 0; const n = WHISPERS.length; for(let i=0;i<n;i++){ const text = WHISPERS[i]; const size = Math.floor(randRange(CONFIG.menu.minSize, CONFIG.menu.maxSize+1)); const a = randRange(CONFIG.menu.whisperAlpha[0], CONFIG.menu.whisperAlpha[1]); const speed = randRange(CONFIG.menu.minSpeed, CONFIG.menu.maxSpeed); const x = randRange(canvas.width*0.08, canvas.width*0.92); const y = randRange(0, canvas.height); state.menuWhispers.push({text,x,y,size,alpha:a,speed,drift:(Math.random()*10-5)}); } }
     function updateMenuWhispers(dt){ for(const w of state.menuWhispers){ w.y -= w.speed * dt; w.x += w.drift * dt; if(w.y < -30){ w.y = canvas.height + randRange(10, 80); w.x = randRange(canvas.width*0.08, canvas.width*0.92); w.size = Math.floor(randRange(CONFIG.menu.minSize, CONFIG.menu.maxSize+1)); w.alpha = randRange(CONFIG.menu.whisperAlpha[0], CONFIG.menu.whisperAlpha[1]); w.speed = randRange(CONFIG.menu.minSpeed, CONFIG.menu.maxSpeed); } if(w.x < 0) w.x += canvas.width; if(w.x > canvas.width) w.x -= canvas.width; } }
