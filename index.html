@@ -62,7 +62,7 @@
       player: { radius: 10, maxHP: 5, shakeOnShot: 3 },
       enemy: { baseSpeed: 36, speedGrowth: 2.6, baseHP: 1, toughChancePerWave: 0.06, spawnPadding: 24 },
       boss:  { baseHP: 12, hpPerTier: 8, speedScale: 0.7, touchDamage: 2, size: 22 },
-      miniboss: { baseHP: 8, hpPerTier: 5, speedScale: 0.8, touchDamage: 1, size: 18 },
+      miniboss: { baseHP: 8, hpPerTier: 5, speedScale: 0.8, touchDamage: 1, size: 18, pulse: { speed: 2.2, maxAlpha: 0.85 } },
       wave:  { startEnemies: 6, addPerWave: 2, spawnInterval: 0.25, breakTime: 1.0, maxSimul: 60 },
       qte:   { keys: ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'], wrongDamage: 1, appearScale: 1.10, wrongMeterPenalty: 15 },
       diss:  { gainPerHit: 8, gainPerKill: 20, drainPerSec: 12, enemySpeedScale: 0.55, dmgBonus: 1, pierce: 1, chainAOERadius: 28, scoreMult: 2, graceOnActivate: 0.25, cooldown: 2.0 },
@@ -72,17 +72,19 @@
       fx:    { grainBase: 0.022, grainLowHPBoost: 0.028, flickerLowHPMax: 0.05 },
       ui:    { ringRadius: 36, qteGap: 14 },
       menu:  { whisperAlpha:[0.06,0.14], minSize:16, maxSize:22, minSpeed:10, maxSpeed:22 },
-      rain: { 
-    startWave: 2,          // börjar efter wave 2
-    baseRate: 40,          // droppar/sek vid start
-    ratePerWave: 25,       // + droppar/sek per wave
-    maxDrops: 600,         // max aktiva fallande droppar
-    speed: [360, 600],     // px/s (fallhastighet)
-    len: [14, 26],          // visuellt streck-längd
-    alpha: 0.45,            // genomskinlighet på strecken
-    fallDist: [18, 60],   // hur långt en droppe "faller" innan träff (px)
-windX: [-50, 50]     // sidvind (px/s) för lite diagonalkänsla
-  }
+      rain: {
+  startWave: 2,          // börjar efter wave 2
+  baseRate: 40,          // droppar/sek vid start
+  ratePerWave: 25,       // + droppar/sek per wave
+  maxDrops: 600,         // max aktiva fallande droppar
+  speed: [360, 600],     // px/s (fallhastighet)
+  len: [14, 26],         // visuellt streck-längd
+  alpha: 0.45,           // genomskinlighet på BLOD-streck
+  fallDist: [18, 60],    // hur långt en droppe faller innan träff (px)
+  windX: [-50, 50],      // sidvind (px/s)
+  mode: 'blood',         // 'blood' | 'off' | 'water'
+  waterAlpha: 0.35       // genomskinlighet på VATTEN-streck
+}
 };
 
     const WHISPERS = [
@@ -162,6 +164,17 @@ function playWhisperForWave(wave){
   snd.volume = 0.5; // lagom låg volym, justera efter smak
   snd.play().catch(()=>{});
 }
+function playGunshot(){
+  if(state.audio.mute) return;
+  // använd samma sfx som skott eller en beep
+  if (sfxShot){
+    sfxShot.currentTime = 0;
+    sfxShot.volume = 0.35;
+    sfxShot.play().catch(()=>{});
+  } else {
+    beep('shot', 0.7, 220);
+  }
+}
 
 // --- ASSETS: player directional sprites ---
 const playerSprites = {};
@@ -172,6 +185,39 @@ function loadPlayerSprite(key, src){
   img.src = src;
   playerSprites[key] = img;
 }
+// --- ASSETS: boss bat sprites ---
+const bossBatImg = new Image();
+let bossBatReady = false;
+bossBatImg.onload = () => { bossBatReady = true; };
+bossBatImg.src = "boss_bat.png";
+
+// --- ASSETS: Siren boss (wave 20, unique) ---
+const sirenImg = new Image();
+let sirenReady = false;
+sirenImg.onload = () => { sirenReady = true; };
+sirenImg.src = "siren.png";
+
+const sirenImg2 = new Image();
+let siren2Ready = false;
+sirenImg2.onload = () => { siren2Ready = true; };
+sirenImg2.src = "siren2.png";
+
+const bossBatImg2 = new Image();
+let bossBat2Ready = false;
+bossBatImg2.onload = () => { bossBat2Ready = true; };
+bossBat2Ready = true;
+bossBatImg2.src = "boss_bat2.png";
+
+// --- ASSETS: miniboss sprites ---
+const miniBossImg = new Image();
+let miniBossReady = false;
+miniBossImg.onload = () => { miniBossReady = true; };
+miniBossImg.src = "miniboss.png";
+
+const miniBossLightImg = new Image();
+let miniBossLightReady = false;
+miniBossLightImg.onload = () => { miniBossLightReady = true; };
+miniBossLightImg.src = "miniboss_light.png";
 
 // --- ASSETS: enemy sprite ---
 const enemyImg = new Image();
@@ -204,6 +250,7 @@ const state = {
   glints:[],
   menuWhispers: [],
   rain:{ drops:[], spawnCarry:0, hits:0 },
+  flags:{ sirenMet:false, sirenResolved:false, sirenDead:false, companion:false },
 
   // --- Relics & mods ---
   powerups:{
@@ -222,6 +269,9 @@ const state = {
   overlay:{ type:null, options:[], selected:0 },
   parasolReady:false,
   lastBreathArmed:false
+  ,
+  worldLight: 0,          // 0 = normalt mörkt, 1 = ljusare
+  worldLightTarget: 0
 };
 
     // --- ASSETS: umbrella image for start menu ---
@@ -239,7 +289,44 @@ umbrellaImg.src = "umbrella.png"; // se till att filen ligger bredvid index.html
       if(state.overlay.type){
         if(e.key==='ArrowLeft'){ state.overlay.selected = (state.overlay.selected+state.overlay.options.length-1)%state.overlay.options.length; }
         else if(e.key==='ArrowRight'){ state.overlay.selected = (state.overlay.selected+1)%state.overlay.options.length; }
-        else if(e.key==='Enter'){ const pick = state.overlay.options[state.overlay.selected]; applyRelic(pick.id); state.overlay.type = null; state.notif = { t:1.2, text:`RELIC ACQUIRED: ${pick.title.toUpperCase()}`}; }
+        else if(e.key==='Enter'){
+  const pick = state.overlay.options[state.overlay.selected];
+
+  if (state.overlay.type === 'relic'){
+    applyRelic(pick.id);
+    state.overlay.type = null;
+    state.notif = { t:1.2, text:`RELIC ACQUIRED: ${pick.title.toUpperCase()}`};
+    // återstarta
+    state.running = true;
+  }
+  else if (state.overlay.type === 'sirenChoice'){
+    if (pick.id === 'companion'){
+  state.flags.sirenResolved = true;
+  state.flags.sirenDead = false;
+  state.flags.companion = true;
+  state.worldLightTarget = 1; // börja tona upp världen
+  // Buffar
+  state.mods.scoreMultBonus += 0.05;   // +5% score
+  state.mods.dissPierceBonus += 1;     // +1 pierce
+  state.mods.dissAOEMult *= 1.2;       // +20% chain AOE
+  state.mods.dissDrainMult *= 0.95;    // 5% långsammare drain
+
+} else {
+      // Leave
+      state.flags.sirenResolved = true;
+      state.flags.sirenDead = true;
+      state.flags.companion = false;
+      playGunshot();
+      state.notif = { t:1.2, text:'THE SIREN IS GONE' };
+    }
+    state.worldLightTarget = 1; // börja tona upp världen
+    state.overlay.type = null;
+    state.running = true;
+
+    // direkt vidare till nästa wave
+    nextWave();
+  }
+}
         return;
       }
       if(e.key==='Enter' && state.inMenu){
@@ -299,6 +386,7 @@ function resetRelics(){
         state.diss.meter = Math.max(0, state.diss.meter - CONFIG.qte.wrongMeterPenalty);
       }
       // beräkna miss-skada med relics
+      playMiss();
       let missDmg = CONFIG.qte.wrongDamage;     // bas 1
       if(state.powerups.glassVein) missDmg += 1; // Glass Vein nackdel
       if(state.powerups.bloodPact) missDmg *= 2; // Blood Pact nackdel
@@ -317,6 +405,26 @@ function resetRelics(){
     const speed = baseSpd * (1 + (state.mods.enemySpeedBoost||0)); state.enemies.push({ x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,boss:false,mini:false }); }
     function spawnBoss(){ const pad=CONFIG.enemy.spawnPadding; const edge=(Math.random()*4)|0; let x,y; if(edge===0){x=randRange(pad,state.width-pad);y=pad;} else if(edge===1){x=state.width-pad;y=randRange(pad,state.height-pad);} else if(edge===2){x=randRange(pad,state.width-pad);y=state.height-pad;} else {x=pad;y=randRange(pad,state.height-pad);} const tier=Math.max(1, Math.floor(state.wave/10)); const hp=CONFIG.boss.baseHP + CONFIG.boss.hpPerTier * tier; const speed=(CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave) * CONFIG.boss.speedScale; state.enemies.push({ x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,boss:true,mini:false,size:CONFIG.boss.size }); state.notif={t:1.0,text:'BOSS'}; beep('boss',0.65,80); }
     function spawnMiniBoss(){ const pad=CONFIG.enemy.spawnPadding; const edge=(Math.random()*4)|0; let x,y; if(edge===0){x=randRange(pad,state.width-pad);y=pad;} else if(edge===1){x=state.width-pad;y=randRange(pad,state.height-pad);} else if(edge===2){x=randRange(pad,state.width-pad);y=state.height-pad;} else {x=pad;y=randRange(pad,state.height-pad);} const tier=Math.max(1, Math.floor(state.wave/5)); const hp=CONFIG.miniboss.baseHP + CONFIG.miniboss.hpPerTier * tier; const speed=(CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave) * CONFIG.miniboss.speedScale; state.enemies.push({ x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,boss:false,mini:true,size:CONFIG.miniboss.size }); state.notif={t:1.0,text:'MINIBOSS'}; beep('boss',0.55,95); }
+    function spawnSirenBoss(){
+  const pad=CONFIG.enemy.spawnPadding;
+  const edge=(Math.random()*4)|0;
+  let x,y;
+  if(edge===0){x=randRange(pad,state.width-pad);y=pad;}
+  else if(edge===1){x=state.width-pad;y=randRange(pad,state.height-pad);}
+  else if(edge===2){x=randRange(pad,state.width-pad);y=state.height-pad;}
+  else {x=pad;y=randRange(pad,state.height-pad);}
+
+  // lite tuffare än vanlig boss
+  const hp = CONFIG.boss.baseHP + CONFIG.boss.hpPerTier * 2; 
+  const speed=(CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave) * (CONFIG.boss.speedScale*0.95);
+
+  state.enemies.push({
+    x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,
+    boss:true, mini:false, size:CONFIG.boss.size, siren:true
+  });
+  state.notif={t:1.2,text:'THE SIREN'};
+  beep('boss',0.75,78);
+}
 
     function nearestEnemy(){ let best=null, bestD=1e9; const cx=state.center.x, cy=state.center.y; for(const e of state.enemies){ if(e.dead) continue; const dx=e.x-cx, dy=e.y-cy; const d=dx*dx+dy*dy; if(d<bestD){ bestD=d; best=e; } } return best; }
     function enemiesAlongRay(ang, minDist, maxCount, angleTol=0.3){ const cx=state.center.x, cy=state.center.y; const out=[]; const candidates=[]; for(const e of state.enemies){ if(e.dead) continue; const dx=e.x-cx, dy=e.y-cy; const dist=Math.hypot(dx,dy); if(dist<=minDist) continue; const a=Math.atan2(dy,dx); let da=Math.abs(normalizeAngle(a-ang)); if(da<=angleTol){ candidates.push({e,dist}); } } candidates.sort((a,b)=>a.dist-b.dist); for(let i=0;i<candidates.length && out.length<maxCount;i++) out.push(candidates[i].e); return out; }
@@ -406,7 +514,41 @@ function qteBurst(){
   state.glints.push({ x, y, t:0, life:0.18 });
 }
     // ----------------------- WAVES & RELICS ----------------------
-    function nextWave(){ state.wave++; state.parasolReady = !!state.powerups.parasolShield; playWhisperForWave(state.wave); state.hp = getMaxHP(); state.notif = { t: 0.9, text: 'FULL HEALTH' }; state.breakTimer = CONFIG.wave.breakTime; state.isBossWave = (state.wave % 10 === 0); state.isMiniBossWave = (!state.isBossWave) && (state.wave % 5 === 0); setupWhisperForBreak(); if(state.isBossWave){ state.spawnQueue=0; state.spawnTimer=0; setTimeout(spawnBoss, 200); } else if(state.isMiniBossWave){ state.spawnQueue=0; state.spawnTimer=0; setTimeout(spawnMiniBoss, 200); } else { const toSpawn = CONFIG.wave.startEnemies + CONFIG.wave.addPerWave*(state.wave-1); state.spawnQueue = toSpawn; state.spawnTimer=0.0; } state.score += CONFIG.score.waveBonus; }
+    function nextWave(){
+  state.wave++;
+  state.parasolReady = !!state.powerups.parasolShield;
+
+  // REGN-BÅGEN
+  if (state.wave === 21){
+    CONFIG.rain.mode = 'off';      // Sluta regna direkt efter Siren
+  } else if (state.wave >= 22){
+    CONFIG.rain.mode = 'water';    // Vattenregn från 22
+  }
+
+  playWhisperForWave(state.wave);
+  state.hp = getMaxHP();
+  state.notif = { t: 0.9, text: 'FULL HEALTH' };
+  state.breakTimer = CONFIG.wave.breakTime;
+
+  // Specialboss på 20
+  state.isBossWave = (state.wave % 10 === 0);
+  state.isMiniBossWave = (!state.isBossWave) && (state.wave % 5 === 0);
+
+  // OVERRIDE för wave 20
+  if (state.wave === 20){
+    state.spawnQueue=0; state.spawnTimer=0;
+    setTimeout(spawnSirenBoss, 200);
+  } else if(state.isBossWave){
+    state.spawnQueue=0; state.spawnTimer=0;
+    setTimeout(spawnBoss, 200);
+  } else if(state.isMiniBossWave){
+    state.spawnQueue=0; state.spawnTimer=0;
+    setTimeout(spawnMiniBoss, 200);
+  } else {
+    const toSpawn = CONFIG.wave.startEnemies + CONFIG.wave.addPerWave*(state.wave-1);
+    state.spawnQueue = toSpawn;
+    state.spawnTimer=0.0;
+  } state.score += CONFIG.score.waveBonus; }
 
     function setupWhisperForBreak(){ if(state.isBossWave || state.isMiniBossWave) { state.whisper.active=false; return; } if(Math.random()>CONFIG.whisper.showChance){ state.whisper.active=false; return; } if(state.whisperPool.length===0) state.whisperPool = shuffledIndices(WHISPERS.length); const idx=state.whisperPool.pop(); const line=WHISPERS[idx]; const fontPx=Math.floor(randRange(CONFIG.whisper.minSize, CONFIG.whisper.maxSize+1)); const duration=CONFIG.whisper.fadeIn + CONFIG.whisper.fadeOut; state.whisper={active:true,text:line,t:0,duration,fontPx}; state.breakTimer = Math.max(state.breakTimer, duration); }
 
@@ -528,7 +670,33 @@ if (state.mods.enemyBoostTimer > 0){
     state.mods.enemyBoostTimer = 0;
     state.mods.enemySpeedBoost = 0;
   }
-} state.enemies = state.enemies.filter(e=>!e.dead); const bossAlive = state.enemies.some(e=> (e.boss || e.mini) && !e.dead); const waveDone = (state.breakTimer<=0) && (state.spawnQueue===0) && (!bossAlive) && (state.enemies.length===0); if(waveDone){ if(state.isMiniBossWave || state.isBossWave){ maybeOfferRelic(); } nextWave(); } const g=CONFIG.gore.gravity; for(const p of state.particles){ p.vx*=CONFIG.gore.drag; p.vy*=CONFIG.gore.drag; p.vy += g*dt; p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt; if(p.life<=0){ bloodCtx.save(); bloodCtx.globalAlpha=0.14; bloodCtx.fillStyle = `rgb(${p.r|0},${p.g|0},${p.b|0})`; bloodCtx.fillRect(p.x,p.y,p.size,p.size); bloodCtx.restore(); } } if(state.particles.length>CONFIG.gore.maxParticles) state.particles.splice(0, state.particles.length - CONFIG.gore.maxParticles); state.particles = state.particles.filter(p=>p.life>0); for(const gB of state.gibs){ gB.vx*=0.992; gB.vy*=0.992; gB.vy += g*dt; gB.x += gB.vx*dt; gB.y += gB.vy*dt; gB.ang += gB.va*dt; gB.life -= dt*0.25; if(gB.life<=0){ bloodCtx.save(); bloodCtx.globalAlpha=0.18; bloodCtx.fillStyle = PALETTE.ink; bloodCtx.translate(gB.x,gB.y); bloodCtx.rotate(gB.ang); bloodCtx.fillRect(-gB.size*0.7,-gB.size*0.3,gB.size*1.4,gB.size*0.6); bloodCtx.restore(); } } state.gibs = state.gibs.filter(gb=>gb.life>0); for(const gl of state.glints){ gl.t += dt; } state.glints = state.glints.filter(gl=> gl.t < gl.life); if(state.hp<=2){ if(Math.random()<0.015) state.fx.glitch = 0.10; } state.fx.glitch *= 0.9; state.target = nearestEnemy(); if(state.notif.t>0) state.notif.t -= dt; updateRain(dt); if(state.gameOver) return; }
+} state.enemies = state.enemies.filter(e=>!e.dead); const bossAlive = state.enemies.some(e=> (e.boss || e.mini) && !e.dead); const waveDone = (state.breakTimer<=0) && (state.spawnQueue===0) && (!bossAlive) && (state.enemies.length===0);
+if(waveDone){
+  // Specialfall: wave 20 Siren
+  if (state.wave === 20 && !state.flags.sirenResolved){
+    state.flags.sirenMet = true;
+    // Visa Companion / Leave istället för relic
+    state.overlay = {
+      type: 'sirenChoice',
+      options: [
+        { id:'companion', title:'Companion', desc:'She joins you. (Small passive boon.)' },
+        { id:'leave',     title:'Leave',     desc:'A shot rings out. The rain remembers.' }
+      ],
+      selected: 0
+    };
+    state.running = false;
+    return; // vänta på spelarens val
+  }
+
+  // Vanlig relic-logik för andra boss/miniboss-waves
+  if(state.isMiniBossWave || state.isBossWave){
+    maybeOfferRelic();
+  }
+  nextWave();
+} const g=CONFIG.gore.gravity; for(const p of state.particles){ p.vx*=CONFIG.gore.drag; p.vy*=CONFIG.gore.drag; p.vy += g*dt; p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt; if(p.life<=0){ bloodCtx.save(); bloodCtx.globalAlpha=0.14; bloodCtx.fillStyle = `rgb(${p.r|0},${p.g|0},${p.b|0})`; bloodCtx.fillRect(p.x,p.y,p.size,p.size); bloodCtx.restore(); } } if(state.particles.length>CONFIG.gore.maxParticles) state.particles.splice(0, state.particles.length - CONFIG.gore.maxParticles); state.particles = state.particles.filter(p=>p.life>0); for(const gB of state.gibs){ gB.vx*=0.992; gB.vy*=0.992; gB.vy += g*dt; gB.x += gB.vx*dt; gB.y += gB.vy*dt; gB.ang += gB.va*dt; gB.life -= dt*0.25; if(gB.life<=0){ bloodCtx.save(); bloodCtx.globalAlpha=0.18; bloodCtx.fillStyle = PALETTE.ink; bloodCtx.translate(gB.x,gB.y); bloodCtx.rotate(gB.ang); bloodCtx.fillRect(-gB.size*0.7,-gB.size*0.3,gB.size*1.4,gB.size*0.6); bloodCtx.restore(); } } state.gibs = state.gibs.filter(gb=>gb.life>0); for(const gl of state.glints){ gl.t += dt; } state.glints = state.glints.filter(gl=> gl.t < gl.life); if(state.hp<=2){ if(Math.random()<0.015) state.fx.glitch = 0.10; } state.fx.glitch *= 0.9; state.target = nearestEnemy(); if(state.notif.t>0) state.notif.t -= dt; updateRain(dt); {
+  const k = Math.exp(-dt * 3);                 // respons-hastighet
+  state.worldLight = state.worldLight * k + state.worldLightTarget * (1 - k);
+} if(state.gameOver) return; }
 
     // ----------------------- RENDER ------------------------------
     function render(){ ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width, canvas.height); ctx.save(); ctx.translate(state.cam.x, state.cam.y); drawArena();
@@ -552,9 +720,18 @@ drawGrainAndFlicker();         // <-- LÄGG TILL HÄR
 
 if(!state.inMenu) drawPlayer(); // <-- OCH FLYTTA HIT
 ctx.restore();
-drawHUD(); if(!state.inMenu && !state.gameOver) drawWhisper(); if(state.inMenu) { drawMenuBackground(); drawMenu(); } else if(state.gameOver) drawGameOver(); if(state.overlay.type) drawOverlay(); }
+drawHUD(); if(!state.inMenu && !state.gameOver) drawWhisper(); if(state.inMenu) { drawMenuBackground(); drawMenu(); } else if(state.gameOver) drawGameOver(); if(state.overlay.type) drawOverlay();
+}
 
-    function drawArena(){ const w=canvas.width, h=canvas.height; const grad = ctx.createRadialGradient(state.center.x, state.center.y, 60, state.center.x, state.center.y, Math.max(w,h)*0.75); grad.addColorStop(0, PALETTE.bg1); grad.addColorStop(1, '#07090f'); ctx.fillStyle = grad; ctx.fillRect(0,0,w,h); ctx.globalAlpha=0.13; ctx.fillStyle=PALETTE.grid; for(let x=0;x<w;x+=24) ctx.fillRect(x,0,1,h); for(let y=0;y<h;y+=24) ctx.fillRect(0,y,w,1); ctx.globalAlpha=1; const vg = ctx.createRadialGradient(state.center.x, state.center.y, Math.min(w,h)*0.45, state.center.x, state.center.y, Math.max(w,h)*0.85); vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1, PALETTE.vignette); ctx.fillStyle=vg; ctx.fillRect(0,0,w,h); if(state.diss.active){ ctx.fillStyle=PALETTE.dissTint; ctx.fillRect(0,0,w,h); } if(state.hp<=2){ ctx.fillStyle=PALETTE.lowHPTint; ctx.fillRect(0,0,w,h); } }
+    function drawArena(){ const w=canvas.width, h=canvas.height; const grad = ctx.createRadialGradient(state.center.x, state.center.y, 60, state.center.x, state.center.y, Math.max(w,h)*0.75); grad.addColorStop(0, PALETTE.bg1); grad.addColorStop(1, '#07090f'); ctx.fillStyle = grad; ctx.fillRect(0,0,w,h); ctx.globalAlpha=0.13; ctx.fillStyle=PALETTE.grid; for(let x=0;x<w;x+=24) ctx.fillRect(x,0,1,h); for(let y=0;y<h;y+=24) ctx.fillRect(0,y,w,1); ctx.globalAlpha=1; const vg = ctx.createRadialGradient(state.center.x, state.center.y, Math.min(w,h)*0.45, state.center.x, state.center.y, Math.max(w,h)*0.85); vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1, PALETTE.vignette); ctx.fillStyle=vg; ctx.fillRect(0,0,w,h); if(state.diss.active){ ctx.fillStyle=PALETTE.dissTint; ctx.fillRect(0,0,w,h); } if(state.hp<=2){ ctx.fillStyle=PALETTE.lowHPTint; ctx.fillRect(0,0,w,h); }   // Efter-Siren-lyft: gör scenen ljusare
+  if (state.worldLight > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    ctx.globalAlpha = 0.25 * state.worldLight;     // styrka
+    ctx.fillStyle = '#dfe7ff';                     // mild kall vit
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  } }
 
     function drawPlayer(){
   const x = state.center.x;
@@ -583,18 +760,108 @@ drawHUD(); if(!state.inMenu && !state.gameOver) drawWhisper(); if(state.inMenu) 
   ctx.restore();
 }
 
-    function drawEnemy(e){ ctx.save(); ctx.translate(e.x, e.y); if(e.boss){ ctx.fillStyle = PALETTE.boss; const w = CONFIG.boss.size*1.2, h = CONFIG.boss.size*2.2; pxRect(-w/2, -h/2, w, h); ctx.globalAlpha=0.2; ctx.fillStyle='#000'; for(let i=-w/2+2;i<w/2;i+=6){ pxRect(i|0, (-h/2)|0, 1, h|0); } ctx.globalAlpha=1; } else if(e.mini){ ctx.fillStyle = PALETTE.miniBoss; const w = CONFIG.miniboss.size*1.2, h = CONFIG.miniboss.size*2.0; pxRect(-w/2, -h/2, w, h); ctx.globalAlpha=0.18; ctx.fillStyle='#000'; for(let i=-w/2+2;i<w/2;i+=7){ pxRect(i|0, (-h/2)|0, 1, h|0); } ctx.globalAlpha=1; } else {
-  // Vanliga fiender: rita din PNG i stället
-  if (enemyImgReady) {
-    const w = 48;      // justera efter din enemy.png
-    const h = 48;      // t.ex. 32/32 eller 64/64
-    ctx.drawImage(enemyImg, -w/2, -h/2, w, h);
+function drawEnemy(e){
+  ctx.save();
+  ctx.translate(e.x, e.y);
+
+  if (e.boss) {
+    // --- BOSS ---
+    if (e.siren) {
+      // Siren (unik boss på wave 20)
+      if (sirenReady && siren2Ready) {
+        const W = 128, H = 128; // justera efter dina siren-PNG:er
+        const spd = 2.0;
+        const k = (Math.sin(state.time * spd * Math.PI * 2) + 1) * 0.5; // 0..1
+
+        // Bas (siren.png) – dämpas när overlay ökar
+        ctx.globalAlpha = 1 - 0.85 * k;
+        ctx.drawImage(sirenImg, -W/2, -H/2, W, H);
+
+        // Overlay (siren2.png) – pulserande till ~1
+        ctx.globalAlpha = Math.min(1, 0.35 + 0.85 * k);
+        ctx.drawImage(sirenImg2, -W/2, -H/2, W, H);
+
+        ctx.globalAlpha = 1;
+      } else {
+        // Fallback (om sprites ej laddat än)
+        ctx.fillStyle = PALETTE.boss;
+        const w = CONFIG.boss.size*1.2, h = CONFIG.boss.size*2.2;
+        pxRect(-w/2, -h/2, w, h);
+        ctx.globalAlpha=0.2; ctx.fillStyle='#000';
+        for(let i=-w/2+2;i<w/2;i+=6) pxRect(i|0, (-h/2)|0, 1, h|0);
+        ctx.globalAlpha=1;
+      }
+    } else {
+      // Andra bossar (ex fladdermus)
+      if (bossBatReady && bossBat2Ready) {
+        const W = 96, H = 96; // justera efter din bat-PNG
+        const cycle = Math.floor(state.time / 0.4) % 2;
+        const img = (cycle === 0 ? bossBatImg : bossBatImg2);
+        ctx.globalAlpha = 1;
+        ctx.drawImage(img, -W/2, -H/2, W, H);
+      } else {
+        // Fallback
+        ctx.fillStyle = PALETTE.boss;
+        const w = CONFIG.boss.size*1.2, h = CONFIG.boss.size*2.2;
+        pxRect(-w/2, -h/2, w, h);
+        ctx.globalAlpha=0.2; ctx.fillStyle='#000';
+        for(let i=-w/2+2;i<w/2;i+=6) pxRect(i|0, (-h/2)|0, 1, h|0);
+        ctx.globalAlpha=1;
+      }
+    }
+
+  } else if (e.mini) {
+    // --- MINIBOSS (puls mellan org + ljus) ---
+    if (miniBossReady && miniBossLightReady) {
+      const W = 64, H = 64; // justera efter din miniboss
+      const spd = (CONFIG.miniboss.pulse?.speed ?? 2.2);
+      const kRaw = (Math.sin(state.time * spd) + 1) * 0.5;
+      const k = Math.pow(kRaw, 1.35);
+      const aMax = (CONFIG.miniboss.pulse?.maxAlpha ?? 0.85);
+
+      ctx.globalAlpha = 1;
+      ctx.drawImage(miniBossImg, -W/2, -H/2, W, H);
+
+      ctx.globalAlpha = k * aMax;
+      ctx.drawImage(miniBossLightImg, -W/2, -H/2, W, H);
+
+      ctx.globalAlpha = 1;
+    } else {
+      // Fallback
+      ctx.fillStyle = PALETTE.miniBoss;
+      const w = CONFIG.miniboss.size*1.2, h = CONFIG.miniboss.size*2.0;
+      pxRect(-w/2, -h/2, w, h);
+      ctx.globalAlpha=0.18; ctx.fillStyle='#000';
+      for(let i=-w/2+2;i<w/2;i+=7) pxRect(i|0, (-h/2)|0, 1, h|0);
+      ctx.globalAlpha=1;
+    }
+
   } else {
-    // Fallback om bilden inte hunnit ladda
-    ctx.fillStyle = '#a00';
-    ctx.fillRect(-10, -10, 20, 20);
+    // --- VANLIGA FIENDER ---
+    if (enemyImgReady) {
+      const w = 48, h = 48; // justera efter din enemy.png
+      ctx.drawImage(enemyImg, -w/2, -h/2, w, h);
+    } else {
+      ctx.fillStyle = '#a00';
+      ctx.fillRect(-10, -10, 20, 20);
+    }
   }
-} if(e.bleed>0){ ctx.globalAlpha = Math.max(0, e.bleed); ctx.strokeStyle = PALETTE.bleedRing; ctx.lineWidth=2; ctx.beginPath(); const rr = e.boss? CONFIG.boss.size+6 : (e.mini? CONFIG.miniboss.size+6 : 10); ctx.arc(0,0,rr,0,Math.PI*2); ctx.stroke(); ctx.globalAlpha=1; e.bleed -= 0.02; } ctx.restore(); }
+
+  // --- Bleed-ring (gemensam avslutning) ---
+  if (e.bleed > 0) {
+    ctx.globalAlpha = Math.max(0, e.bleed);
+    ctx.strokeStyle = PALETTE.bleedRing;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const rr = e.boss ? CONFIG.boss.size+6 : (e.mini ? CONFIG.miniboss.size+6 : 10);
+    ctx.arc(0, 0, rr, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    e.bleed -= 0.02;
+  }
+
+  ctx.restore();
+}
 
     function drawParticle(p){ ctx.fillStyle = `rgb(${p.r|0},${p.g|0},${p.b|0})`; ctx.fillRect(p.x, p.y, p.size, p.size); }
 
@@ -625,14 +892,128 @@ drawHUD(); if(!state.inMenu && !state.gameOver) drawWhisper(); if(state.inMenu) 
 
     function drawDissociationRing(){ const x=state.center.x, y=state.center.y, r=CONFIG.ui.ringRadius; ctx.save(); ctx.lineWidth=4; ctx.strokeStyle='rgba(50,60,70,0.6)'; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.stroke(); const pct=Math.max(0, Math.min(1, state.diss.meter/100)); ctx.strokeStyle = state.diss.active? PALETTE.dissRing : PALETTE.dissRingIdle; ctx.beginPath(); ctx.arc(x,y,r,-Math.PI/2, -Math.PI/2 + pct*Math.PI*2); ctx.stroke(); if(state.diss.active){ ctx.globalAlpha=0.18; ctx.fillStyle='rgba(140,160,190,0.3)'; ctx.beginPath(); ctx.arc(x,y,r+10,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1; } ctx.restore(); }
 
-    function drawHUD(){ const pad=14; ctx.save(); ctx.fillStyle='#dde3f4'; ctx.font='16px K2K-Pixel, monospace'; ctx.textBaseline='top'; ctx.textAlign='left'; let y = pad; ctx.fillText(`HP: ${state.hp}/${getMaxHP()}`, pad, y); y+=20; ctx.fillText(`Wave: ${Math.max(1,state.wave)}`, pad, y); y+=20; ctx.fillText(`Score: ${state.score}`, pad, y); y+=20; if(state.audio.mute){ ctx.fillStyle='#9c3a42'; ctx.fillText('Muted [M]', pad, y); y+=20; ctx.fillStyle='#dde3f4'; } const relics=[]; if(state.powerups.echoHeart) relics.push('Echo Heart'); if(state.powerups.fracturedFocus) relics.push('Fractured Focus'); if(state.powerups.glassVein) relics.push('Glass Vein'); if(relics.length){ ctx.fillText(`Relic: ${relics.join(', ')}`, pad, y); y+=20; } const bossEnemy = state.enemies.find(e=> (e.boss || e.mini) && !e.dead); if(bossEnemy){ const w=Math.min(canvas.width*0.5, 420), h=10; const x=canvas.width/2 - w/2, yb=18; const pct=Math.max(0, bossEnemy.hp/bossEnemy.maxHP); ctx.fillStyle='#120b10'; ctx.fillRect(x-2,yb-2,w+4,h+4); ctx.fillStyle='#23131a'; ctx.fillRect(x,yb,w,h); ctx.fillStyle='#6b2a38'; ctx.fillRect(x,yb,w*pct,h); ctx.fillStyle='#e7ecff'; ctx.font='14px K2K-Pixel, monospace'; ctx.textAlign='center'; ctx.fillText(bossEnemy.mini? 'MINIBOSS' : 'BOSS', x+w/2, yb-14); } if(state.breakTimer>0){ ctx.save(); ctx.fillStyle='rgba(120,150,180,0.75)'; ctx.font='bold 36px K2K-Pixel, monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(`WAVE ${state.wave}`, state.center.x, 56); ctx.restore(); } if(state.notif.t>0){ ctx.save(); ctx.globalAlpha=Math.max(0,state.notif.t); ctx.fillStyle='#e7f5ff'; ctx.font='bold 20px K2K-Pixel, monospace'; ctx.textAlign='center'; ctx.fillText(state.notif.text, state.center.x, state.center.y + 60); ctx.restore(); } ctx.restore(); }
+    function drawHUD(){
+  const pad = 14;
+  ctx.save();
+  ctx.fillStyle = '#dde3f4';
+  ctx.font = '16px K2K-Pixel, monospace';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+
+  let y = pad;
+
+  // Bas-HUD
+  ctx.fillText(`HP: ${state.hp}/${getMaxHP()}`, pad, y); y += 20;
+  ctx.fillText(`Wave: ${Math.max(1,state.wave)}`, pad, y); y += 20;
+  ctx.fillText(`Score: ${state.score}`, pad, y); y += 20;
+
+  // Mute-rad
+  if (state.audio.mute){
+    ctx.fillStyle = '#9c3a42';
+    ctx.fillText('Muted [M]', pad, y); y += 20;
+    ctx.fillStyle = '#dde3f4';
+  }
+
+  // Relics
+  const relics = [];
+  if (state.powerups.echoHeart)      relics.push('Echo Heart');
+  if (state.powerups.fracturedFocus) relics.push('Fractured Focus');
+  if (state.powerups.glassVein)      relics.push('Glass Vein');
+  if (state.powerups.bloodPact)      relics.push('Blood Pact');
+  if (state.powerups.parasolShield)  relics.push('Parasol Shield');
+  if (state.powerups.lastBreath)     relics.push('Last Breath');
+  if (relics.length){
+    ctx.fillText(`Relic: ${relics.join(', ')}`, pad, y); y += 20;
+  }
+
+  // Companion – ALLTID, exakt en rad
+  if (state.flags.companion){
+    ctx.fillStyle = '#cfe3ff';
+    ctx.fillText('Companion: The Siren  (+1 pierce, +20% AOE, +5% score, −5% diss drain)', pad, y);
+    y += 20;
+    ctx.fillStyle = '#dde3f4';
+  }
+
+  // Boss-HP bar
+  const bossEnemy = state.enemies.find(e => (e.boss || e.mini) && !e.dead);
+  if (bossEnemy){
+    const w = Math.min(canvas.width*0.5, 420), h = 10;
+    const x = canvas.width/2 - w/2, yb = 18;
+    const pct = Math.max(0, bossEnemy.hp / bossEnemy.maxHP);
+    ctx.fillStyle='#120b10'; ctx.fillRect(x-2,yb-2,w+4,h+4);
+    ctx.fillStyle='#23131a'; ctx.fillRect(x,yb,w,h);
+    ctx.fillStyle='#6b2a38'; ctx.fillRect(x,yb,w*pct,h);
+    ctx.fillStyle='#e7ecff'; ctx.font='14px K2K-Pixel, monospace'; ctx.textAlign='center';
+    ctx.fillText(bossEnemy.mini ? 'MINIBOSS' : 'BOSS', x+w/2, yb-14);
+    ctx.font='16px K2K-Pixel, monospace'; ctx.textAlign='left'; ctx.fillStyle = '#dde3f4';
+  }
+
+  // Wave-banner
+  if (state.breakTimer > 0){
+    ctx.save();
+    ctx.fillStyle='rgba(120,150,180,0.75)';
+    ctx.font='bold 36px K2K-Pixel, monospace';
+    ctx.textAlign='center';
+    ctx.textBaseline='middle';
+    ctx.fillText(`WAVE ${state.wave}`, state.center.x, 56);
+    ctx.restore();
+  }
+
+  // Notif (overlay, oberoende av HUD-layout)
+  if (state.notif.t > 0){
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, state.notif.t);
+    ctx.fillStyle = '#e7f5ff';
+    ctx.font = 'bold 20px K2K-Pixel, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(state.notif.text, state.center.x, state.center.y + 60);
+    ctx.restore();
+  }
+
+  ctx.restore();
+}
 
     function drawWhisper(){ if(!state.whisper.active) return; const t=state.whisper.t, dur=state.whisper.duration; let a=0; const fi=CONFIG.whisper.fadeIn, fo=CONFIG.whisper.fadeOut; if(t<fi) a=t/fi; else if(t>dur-fo) a=Math.max(0,(dur-t)/fo); else a=1; if(a<=0) return; const text=state.whisper.text; const size=state.whisper.fontPx; const y=Math.floor(state.center.y + canvas.height*0.25); ctx.save(); ctx.globalAlpha=Math.min(1,a); ctx.font=`${size}px K2K-Pixel, monospace`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle=CONFIG.whisper.shadow; ctx.fillText(text, state.center.x+1, y+1); ctx.fillStyle=CONFIG.whisper.color; ctx.fillText(text, state.center.x, y); ctx.restore(); }
 
     // Menu background layer: scrolling whispers
     function drawMenuBackground(){ updateMenuWhispers(state.dt); ctx.save(); drawMenuWhispers(); ctx.restore(); }
 
-    function drawOverlay(){ if(state.overlay.type==='relic'){ const opts=state.overlay.options; const pad=16; const w=Math.min(520, canvas.width*0.8); const x=canvas.width/2 - w/2; const y=canvas.height*0.65; ctx.save(); ctx.fillStyle='rgba(8,10,14,0.85)'; ctx.fillRect(x- pad, y-80, w+ pad*2, 160); ctx.strokeStyle='#2a2f3a'; ctx.strokeRect(x- pad, y-80, w+ pad*2, 160); ctx.font='bold 20px K2K-Pixel, monospace'; ctx.fillStyle='#e7ecf8'; ctx.textAlign='center'; ctx.fillText('Choose a Relic', canvas.width/2, y-54); const colW = w/Math.max(1,opts.length); for(let i=0;i<opts.length;i++){ const ox=x + i*colW + colW/2; const sel = (i===state.overlay.selected); ctx.font='bold 18px K2K-Pixel, monospace'; ctx.fillStyle= sel? '#ffffff' : '#d6dbea'; ctx.fillText(opts[i].title, ox, y-18); ctx.font='14px K2K-Pixel, monospace'; ctx.fillStyle= sel? '#cfe3ff' : '#b9bfcd'; wrapText(opts[i].desc, ox, y+6, colW-24, 16); if(sel){ ctx.strokeStyle='#9c3a42'; ctx.strokeRect(x + i*colW + 6, y-40, colW-12, 100); } } ctx.font='12px K2K-Pixel, monospace'; ctx.fillStyle='#9aa3b6'; ctx.fillText('← → choose   •   Enter confirm', canvas.width/2, y+78); ctx.restore(); } }
+    function drawOverlay(){ if(state.overlay.type==='relic'){ const opts=state.overlay.options; const pad=16; const w=Math.min(520, canvas.width*0.8); const x=canvas.width/2 - w/2; const y=canvas.height*0.65; ctx.save(); ctx.fillStyle='rgba(8,10,14,0.85)'; ctx.fillRect(x- pad, y-80, w+ pad*2, 160); ctx.strokeStyle='#2a2f3a'; ctx.strokeRect(x- pad, y-80, w+ pad*2, 160); ctx.font='bold 20px K2K-Pixel, monospace'; ctx.fillStyle='#e7ecf8'; ctx.textAlign='center'; ctx.fillText('Choose a Relic', canvas.width/2, y-54); const colW = w/Math.max(1,opts.length); for(let i=0;i<opts.length;i++){ const ox=x + i*colW + colW/2; const sel = (i===state.overlay.selected); ctx.font='bold 18px K2K-Pixel, monospace'; ctx.fillStyle= sel? '#ffffff' : '#d6dbea'; ctx.fillText(opts[i].title, ox, y-18); ctx.font='14px K2K-Pixel, monospace'; ctx.fillStyle= sel? '#cfe3ff' : '#b9bfcd'; wrapText(opts[i].desc, ox, y+6, colW-24, 16); if(sel){ ctx.strokeStyle='#9c3a42'; ctx.strokeRect(x + i*colW + 6, y-40, colW-12, 100); } } ctx.font='12px K2K-Pixel, monospace'; ctx.fillStyle='#9aa3b6'; ctx.fillText('← → choose   •   Enter confirm', canvas.width/2, y+78); ctx.restore(); } else if(state.overlay.type==='sirenChoice'){
+  const opts=state.overlay.options;
+  const pad=16;
+  const w=Math.min(520, canvas.width*0.8);
+  const x=canvas.width/2 - w/2;
+  const y=canvas.height*0.65;
+  ctx.save();
+  ctx.fillStyle='rgba(8,10,14,0.85)';
+  ctx.fillRect(x- pad, y-80, w+ pad*2, 160);
+  ctx.strokeStyle='#2a2f3a';
+  ctx.strokeRect(x- pad, y-80, w+ pad*2, 160);
+  ctx.font='bold 20px K2K-Pixel, monospace';
+  ctx.fillStyle='#e7ecf8';
+  ctx.textAlign='center';
+  ctx.fillText('The Siren', canvas.width/2, y-54);
+
+  const colW = w/Math.max(1,opts.length);
+  for(let i=0;i<opts.length;i++){
+    const ox=x + i*colW + colW/2;
+    const sel = (i===state.overlay.selected);
+    ctx.font='bold 18px K2K-Pixel, monospace';
+    ctx.fillStyle= sel? '#ffffff' : '#d6dbea';
+    ctx.fillText(opts[i].title, ox, y-18);
+    ctx.font='14px K2K-Pixel, monospace';
+    ctx.fillStyle= sel? '#cfe3ff' : '#b9bfcd';
+    wrapText(opts[i].desc, ox, y+6, colW-24, 16);
+    if(sel){
+      ctx.strokeStyle='#9c3a42';
+      ctx.strokeRect(x + i*colW + 6, y-40, colW-12, 100);
+    }
+  }
+  ctx.font='12px K2K-Pixel, monospace';
+  ctx.fillStyle='#9aa3b6';
+  ctx.fillText('← → choose   •   Enter confirm', canvas.width/2, y+78);
+  ctx.restore();
+}}
 
     function wrapText(text, x, y, maxWidth, lineHeight){ const words=text.split(' '); let line=''; let yy=y; ctx.textAlign='center'; for(let n=0;n<words.length;n++){ const testLine=line + words[n] + ' '; const metrics=ctx.measureText(testLine); if(metrics.width > maxWidth && n>0){ ctx.fillText(line, x, yy); line=words[n] + ' '; yy += lineHeight; } else { line=testLine; } } ctx.fillText(line.trim(), x, yy); }
 
@@ -725,7 +1106,7 @@ function updateRain(dt){
 
   // Om du vill att regnet bara ska vara aktivt under vågor (inte i pausen):
   // if (state.breakTimer > 0) return;
-
+  // När det regnar vatten: tvätta långsamt bort allt blod
   // Spawna droppar
   state.rain.spawnCarry += rate * dt;
   let spawnCount = Math.floor(state.rain.spawnCarry);
@@ -746,50 +1127,90 @@ function updateRain(dt){
   const gx = d.x | 0;
   const gy = Math.min(state.height - 3, Math.max(3, d.impactY | 0));
 
-  bloodCtx.save();
-  bloodCtx.globalCompositeOperation = 'source-over';
-
-  // Baspöl – lite starkare än vanliga splatter
-  bloodCtx.globalAlpha = Math.min(0.32, CONFIG.gore.poolAlpha * 2.4);
-  bloodCtx.fillStyle = PALETTE.ink;
-  bloodCtx.beginPath();
-  bloodCtx.ellipse(gx, gy, randRange(10, 20), randRange(4, 9), Math.random()*Math.PI, 0, Math.PI*2);
-  bloodCtx.fill();
-
-  // Några extra “stänk” runt träffen för att synas bättre
-  const splats = 3 + (Math.random()*3|0);
-  for (let k=0; k<splats; k++){
-    const rx = randRange(-12, 12);
-    const ry = randRange(-6, 6);
+  if (CONFIG.rain.mode === 'blood'){
+    // (som innan) måla blod-splashes
+    bloodCtx.save();
+    bloodCtx.globalCompositeOperation = 'source-over';
+    bloodCtx.globalAlpha = Math.min(0.32, CONFIG.gore.poolAlpha * 2.4);
+    bloodCtx.fillStyle = PALETTE.ink;
     bloodCtx.beginPath();
-    bloodCtx.ellipse(gx + rx, gy + ry, randRange(5, 11), randRange(2, 6), Math.random()*Math.PI, 0, Math.PI*2);
+    bloodCtx.ellipse(gx, gy, randRange(10, 20), randRange(4, 9), Math.random()*Math.PI, 0, Math.PI*2);
     bloodCtx.fill();
+    const splats = 3 + (Math.random()*3|0);
+    for (let k=0; k<splats; k++){
+      const rx = randRange(-12, 12);
+      const ry = randRange(-6, 6);
+      bloodCtx.beginPath();
+      bloodCtx.ellipse(gx + rx, gy + ry, randRange(5, 11), randRange(2, 6), Math.random()*Math.PI, 0, Math.PI*2);
+      bloodCtx.fill();
+    }
+    bloodCtx.restore();
+
+  } else if (CONFIG.rain.mode === 'water'){
+    // Tvätta lokalt genom att "sudda ut" blodet där droppen träffar,
+    // med samma pöl/ellips-estetik som blodet (fast destination-out)
+    bloodCtx.save();
+    bloodCtx.globalCompositeOperation = 'destination-out';
+
+    // huvudpöl (svag – byggs upp av många träffar)
+    bloodCtx.globalAlpha = 0.12;
+    const mainW = randRange(10, 20);
+    const mainH = randRange(4, 9);
+    bloodCtx.beginPath();
+    bloodCtx.ellipse(gx, gy, mainW, mainH, Math.random()*Math.PI, 0, Math.PI*2);
+    bloodCtx.fill();
+
+    // extra små “droppar” runtom
+    const holes = 3 + (Math.random()*3|0);
+    for (let k=0; k<holes; k++){
+      const rx = randRange(-12, 12);
+      const ry = randRange(-6,  6);
+      bloodCtx.globalAlpha = randRange(0.06, 0.14);
+      bloodCtx.beginPath();
+      bloodCtx.ellipse(gx + rx, gy + ry, randRange(5, 11), randRange(2, 6), Math.random()*Math.PI, 0, Math.PI*2);
+      bloodCtx.fill();
+    }
+
+    // liten “rinn”-streak i droppens fallriktning (ger mer organisk form)
+    const ang = Math.atan2(d.vy, d.vx);
+    bloodCtx.globalAlpha = 0.08;
+    bloodCtx.beginPath();
+    bloodCtx.ellipse(
+      gx, gy,
+      mainW * 1.4, mainH * 0.9,
+      ang, 0, Math.PI*2
+    );
+    bloodCtx.fill();
+
+    bloodCtx.restore();
   }
 
-  bloodCtx.restore();
-
-  // räkna träffar och ta bort droppen
   state.rain.hits++;
   drops.splice(i,1);
-}
-  }
+}}
 }
 
 function drawRain(){
-  if (!state.rain.drops.length) return;
+  if (CONFIG.rain.mode === 'off' || !state.rain.drops.length) return;
+
   ctx.save();
-  ctx.strokeStyle = `rgba(120,20,26,${CONFIG.rain.alpha})`; // blodig röd ton
+  const alpha = (CONFIG.rain.mode === 'blood') ? CONFIG.rain.alpha : CONFIG.rain.waterAlpha;
+  const color = (CONFIG.rain.mode === 'blood')
+    ? `rgba(120,20,26,${alpha})`
+    : `rgba(180,200,255,${alpha})`; // vatten: ljusblå ton
+
+  ctx.strokeStyle = color;
   ctx.lineWidth = 3;
   ctx.lineCap = 'round';
+
   for (const d of state.rain.drops){
     const m = Math.hypot(d.vx, d.vy) || 1;
-  const bx = d.x - (d.vx / m) * d.len;
-  const by = d.y - (d.vy / m) * d.len;
-
-  ctx.beginPath();
-  ctx.moveTo(d.x, d.y);
-  ctx.lineTo(bx, by);
-  ctx.stroke();
+    const bx = d.x - (d.vx / m) * d.len;
+    const by = d.y - (d.vy / m) * d.len;
+    ctx.beginPath();
+    ctx.moveTo(d.x, d.y);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
   }
   ctx.restore();
 }
