@@ -14,6 +14,7 @@
   <canvas id="game"></canvas>
   <!-- Loopande bakgrundsmusik -->
 <audio id="bgm" src="bgm.mp3" loop preload="auto" style="display:none"></audio>
+<audio id="bgm2" src="key2kill.mp3" loop preload="auto" style="display:none"></audio>
 <audio id="sfx-shot" src="shot.mp3" preload="auto"></audio>
 <audio id="sfx-reload" src="reloud.mp3" preload="auto"></audio>
 <audio id="sfx-miss-please" src="please.mp3" preload="auto"></audio>
@@ -84,7 +85,12 @@
   windX: [-50, 50],      // sidvind (px/s)
   mode: 'blood',         // 'blood' | 'off' | 'water'
   waterAlpha: 0.35       // genomskinlighet på VATTEN-streck
-}
+},
+postSiren: {
+    fromWave: 21,          // börjar från wave 21
+    addPerWaveMult: 1.8,   // 80% fler fiender per våg
+    maxSimulBonus: 30      // +30 fler kan vara på skärmen samtidigt
+  }
 };
 
     const WHISPERS = [
@@ -113,6 +119,37 @@ const bgm = document.getElementById('bgm'); const sfxShot = document.getElementB
   document.getElementById('sfx-miss-no'),
   document.getElementById('sfx-miss-ouch'),
 ];
+const bgm2 = document.getElementById('bgm2');
+
+// Smidig volymfade (ut eller in)
+function fadeAudio(audioEl, from=1, to=0, dur=2.0){
+  if(!audioEl) return Promise.resolve();
+  const start = performance.now();
+  audioEl.volume = from;
+  return new Promise(res=>{
+    function step(now){
+      const t = Math.min(1, (now - start) / (dur*1000));
+      audioEl.volume = from + (to - from) * t;
+      if (t < 1) requestAnimationFrame(step);
+      else res();
+    }
+    requestAnimationFrame(step);
+  });
+}
+async function fadeOutAndPause(audioEl, dur=2.0){
+  await fadeAudio(audioEl, audioEl.volume ?? 1, 0, dur);
+  try { audioEl.pause(); } catch(_) {}
+}
+function startKey2KillMusic(fadeInSec=2.0, targetVol=0.35){
+  if(!bgm2) return;
+  bgm2.loop = true;
+  bgm2.muted = state.audio?.mute ?? false;
+  bgm2.currentTime = 0;
+  bgm2.volume = 0;
+  bgm2.play().catch(()=>{});
+  // Fada in
+  fadeAudio(bgm2, 0, targetVol, fadeInSec);
+}
 const whisperSounds = {
   2: document.getElementById('whisper-notwater'),
   5: document.getElementById('whisper-survive'),
@@ -185,6 +222,16 @@ function loadPlayerSprite(key, src){
   img.src = src;
   playerSprites[key] = img;
 }
+// --- ASSETS: pause sprites ---
+const pauseImg = new Image();
+let pauseReady = false;
+pauseImg.onload = () => { pauseReady = true; };
+pauseImg.src = "pause.png";
+
+const pauseImg2 = new Image();
+let pause2Ready = false;
+pauseImg2.onload = () => { pause2Ready = true; };
+pauseImg2.src = "pause2.png";
 // --- ASSETS: boss bat sprites ---
 const bossBatImg = new Image();
 let bossBatReady = false;
@@ -205,7 +252,6 @@ sirenImg2.src = "siren2.png";
 const bossBatImg2 = new Image();
 let bossBat2Ready = false;
 bossBatImg2.onload = () => { bossBat2Ready = true; };
-bossBat2Ready = true;
 bossBatImg2.src = "boss_bat2.png";
 
 // --- ASSETS: miniboss sprites ---
@@ -232,7 +278,7 @@ loadPlayerSprite('right', 'player48x82_right.png');
 loadPlayerSprite('left',  'player48x82_left.png');  
 
 const state = {
-  running:false, inMenu:true, gameOver:false,
+  running:false, inMenu:true, gameOver:false, pause:false,
   width:0, height:0, center:{x:0,y:0}, time:0, dt:0,
   hp: 5, score:0, wave:0,
   spawnQueue:0, spawnTimer:0, breakTimer:0,
@@ -271,7 +317,10 @@ const state = {
   lastBreathArmed:false
   ,
   worldLight: 0,          // 0 = normalt mörkt, 1 = ljusare
-  worldLightTarget: 0
+  worldLightTarget: 0,
+
+  player: { x: 0, y: 0, speed: 200 },
+input: { up:false, down:false, left:false, right:false },
 };
 
     // --- ASSETS: umbrella image for start menu ---
@@ -284,6 +333,13 @@ umbrellaImg.src = "umbrella.png"; // se till att filen ligger bredvid index.html
     function initAudio(){ if(state.audio.ctx) return; try{ state.audio.ctx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
 
     // ----------------------- INPUT -------------------------------
+    
+    function freeMoveEnabled(){
+  return state.wave >= 21 && state.flags.sirenResolved; // efter wave 20
+}
+function postSirenActive(){
+  return state.flags.sirenResolved && state.wave >= CONFIG.postSiren.fromWave;
+}
     window.addEventListener('keydown', (e)=>{
       if(e.repeat) return;
       if(state.overlay.type){
@@ -304,6 +360,7 @@ umbrellaImg.src = "umbrella.png"; // se till att filen ligger bredvid index.html
   state.flags.sirenResolved = true;
   state.flags.sirenDead = false;
   state.flags.companion = true;
+  fadeOutAndPause(bgm, 2.5);
   state.worldLightTarget = 1; // börja tona upp världen
   // Buffar
   state.mods.scoreMultBonus += 0.05;   // +5% score
@@ -312,19 +369,20 @@ umbrellaImg.src = "umbrella.png"; // se till att filen ligger bredvid index.html
   state.mods.dissDrainMult *= 0.95;    // 5% långsammare drain
 
 } else {
-      // Leave
-      state.flags.sirenResolved = true;
-      state.flags.sirenDead = true;
-      state.flags.companion = false;
-      playGunshot();
-      state.notif = { t:1.2, text:'THE SIREN IS GONE' };
-    }
-    state.worldLightTarget = 1; // börja tona upp världen
-    state.overlay.type = null;
-    state.running = true;
+  // Leave (skjuter Siren)
+  state.flags.sirenResolved = true;
+  state.flags.sirenDead = true;
+  state.flags.companion = false;
+  playGunshot();
+  state.notif = { t:1.2, text:'THE SIREN IS GONE' };
+}
+state.worldLightTarget = 1;
+fadeOutAndPause(bgm, 2.5);
+state.overlay.type = null;
+state.running = true;
 
-    // direkt vidare till nästa wave
-    nextWave();
+// direkt vidare till nästa wave
+nextWave();
   }
 }
         return;
@@ -336,20 +394,55 @@ umbrellaImg.src = "umbrella.png"; // se till att filen ligger bredvid index.html
 }
       if(e.key==='R' || e.key==='r'){ restart(); return; }
       if (e.key==='M' || e.key==='m') {
-  state.audio.mute = !state.audio.mute;
-  if (bgm) bgm.muted = state.audio.mute; // muta/avmuta musiken också
+        state.audio.mute = !state.audio.mute;
+  if (bgm)  bgm.muted  = state.audio.mute;
+  if (bgm2) bgm2.muted = state.audio.mute;
   return;
 }
+if(e.key==='p' || e.key==='P'){
+    state.pause = !state.pause;
+    return;
+  }
+  // 👇 Lägg detta block direkt här:
+if (state.pause) {
+  // Tillåt fortfarande M (mute), R (restart) och P (hanteras ovan), men blocka resten
+  if (e.key !== 'M' && e.key !== 'm' && e.key !== 'R' && e.key !== 'r') {
+    e.preventDefault();
+    return;
+  }
+}
+// ...
       if(!state.running || state.gameOver || state.inMenu) return;
       if(CONFIG.qte.keys.includes(e.key)) handleQTE(e.key);
-    });
+      if (freeMoveEnabled()){
+  if (e.key === 'w' || e.key === 'W') state.input.up = true;
+  if (e.key === 's' || e.key === 'S') state.input.down = true;
+  if (e.key === 'a' || e.key === 'A') state.input.left = true;
+  if (e.key === 'd' || e.key === 'D') state.input.right = true;
+}
+});
+
+
+window.addEventListener('keyup', (e)=>{
+  if (freeMoveEnabled()){
+  if (e.key === 'w' || e.key === 'W') state.input.up = false;
+  if (e.key === 's' || e.key === 'S') state.input.down = false;
+  if (e.key === 'a' || e.key === 'A') state.input.left = false;
+  if (e.key === 'd' || e.key === 'D') state.input.right = false;
+}
+});
 
     // ----------------------- GAME FLOW ---------------------------
-    function startGame(){ initAudio(); startMusic(); state.inMenu=false; state.gameOver=false; state.running=true; state.score=0; state.hp=getMaxHP(); state.enemies.length=0; state.particles.length=0; state.gibs.length=0; state.wave=0; state.spawnQueue=0; state.breakTimer=0; state.diss={active:false,meter:0,cooldown:0,grace:0}; state.whisperPool = shuffledIndices(WHISPERS.length); state.whisper.active=false; state.whisper.t=0; resetRelics(); nextQTE(true); nextWave(); }
+    function startGame(){ initAudio(); startMusic(); if (bgm2){ try { bgm2.pause(); } catch(_) {} bgm2.currentTime = 0; } state.inMenu=false; state.gameOver=false; state.running=true; state.score=0; state.hp=getMaxHP(); state.enemies.length=0; state.particles.length=0; state.gibs.length=0; state.wave=0; state.spawnQueue=0; state.breakTimer=0; state.diss={active:false,meter:0,cooldown:0,grace:0}; state.whisperPool = shuffledIndices(WHISPERS.length); state.whisper.active=false; state.whisper.t=0; resetRelics(); nextQTE(true); nextWave();  state.player.x = state.center.x;
+    state.player.y = state.center.y; }
     function getMaxHP(){
   const base = CONFIG.player.maxHP + (state.powerups.echoHeart?1:0);
   const penalty = state.powerups.lastBreath ? 1 : 0;
   return Math.max(1, base - penalty);
+}
+function getPlayerPos(){
+  if (!freeMoveEnabled()) return state.center; // före Siren: stilla i mitten
+  return state.player;                         // efter Siren: WASD-position
 }
 function resetRelics(){
   state.powerups = {
@@ -401,7 +494,10 @@ function resetRelics(){
     function activateDiss(){ state.diss.active=true; state.diss.grace = CONFIG.diss.graceOnActivate; state.bannerFlash=0.6; beep('boss',0.5,105); state.notif={t:0.9,text:'DISSOCIATION'}; }
 
     // ----------------------- ENTITIES ----------------------------
-    function spawnEnemy(){ if(state.enemies.length>=CONFIG.wave.maxSimul) return; const edge=(Math.random()*4)|0; const pad=CONFIG.enemy.spawnPadding; let x,y; if(edge===0){ x=randRange(pad,state.width-pad); y=pad; } else if(edge===1){ x=state.width-pad; y=randRange(pad,state.height-pad); } else if(edge===2){ x=randRange(pad,state.width-pad); y=state.height-pad; } else { x=pad; y=randRange(pad,state.height-pad); } const tough=Math.random() < (CONFIG.enemy.toughChancePerWave * state.wave); const hp = CONFIG.enemy.baseHP + (tough?1:0) + ((state.wave>8 && Math.random()<0.1)?1:0); const baseSpd = CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave + (Math.random()*8-4);
+    function spawnEnemy(){ const maxSim = postSirenActive()
+    ? CONFIG.wave.maxSimul + CONFIG.postSiren.maxSimulBonus
+    : CONFIG.wave.maxSimul;
+  if (state.enemies.length >= maxSim) return; const edge=(Math.random()*4)|0; const pad=CONFIG.enemy.spawnPadding; let x,y; if(edge===0){ x=randRange(pad,state.width-pad); y=pad; } else if(edge===1){ x=state.width-pad; y=randRange(pad,state.height-pad); } else if(edge===2){ x=randRange(pad,state.width-pad); y=state.height-pad; } else { x=pad; y=randRange(pad,state.height-pad); } const tough=Math.random() < (CONFIG.enemy.toughChancePerWave * state.wave); const hp = CONFIG.enemy.baseHP + (tough?1:0) + ((state.wave>8 && Math.random()<0.1)?1:0); const baseSpd = CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave + (Math.random()*8-4);
     const speed = baseSpd * (1 + (state.mods.enemySpeedBoost||0)); state.enemies.push({ x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,boss:false,mini:false }); }
     function spawnBoss(){ const pad=CONFIG.enemy.spawnPadding; const edge=(Math.random()*4)|0; let x,y; if(edge===0){x=randRange(pad,state.width-pad);y=pad;} else if(edge===1){x=state.width-pad;y=randRange(pad,state.height-pad);} else if(edge===2){x=randRange(pad,state.width-pad);y=state.height-pad;} else {x=pad;y=randRange(pad,state.height-pad);} const tier=Math.max(1, Math.floor(state.wave/10)); const hp=CONFIG.boss.baseHP + CONFIG.boss.hpPerTier * tier; const speed=(CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave) * CONFIG.boss.speedScale; state.enemies.push({ x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,boss:true,mini:false,size:CONFIG.boss.size }); state.notif={t:1.0,text:'BOSS'}; beep('boss',0.65,80); }
     function spawnMiniBoss(){ const pad=CONFIG.enemy.spawnPadding; const edge=(Math.random()*4)|0; let x,y; if(edge===0){x=randRange(pad,state.width-pad);y=pad;} else if(edge===1){x=state.width-pad;y=randRange(pad,state.height-pad);} else if(edge===2){x=randRange(pad,state.width-pad);y=state.height-pad;} else {x=pad;y=randRange(pad,state.height-pad);} const tier=Math.max(1, Math.floor(state.wave/5)); const hp=CONFIG.miniboss.baseHP + CONFIG.miniboss.hpPerTier * tier; const speed=(CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave) * CONFIG.miniboss.speedScale; state.enemies.push({ x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,boss:false,mini:true,size:CONFIG.miniboss.size }); state.notif={t:1.0,text:'MINIBOSS'}; beep('boss',0.55,95); }
@@ -426,21 +522,60 @@ function resetRelics(){
   beep('boss',0.75,78);
 }
 
-    function nearestEnemy(){ let best=null, bestD=1e9; const cx=state.center.x, cy=state.center.y; for(const e of state.enemies){ if(e.dead) continue; const dx=e.x-cx, dy=e.y-cy; const d=dx*dx+dy*dy; if(d<bestD){ bestD=d; best=e; } } return best; }
-    function enemiesAlongRay(ang, minDist, maxCount, angleTol=0.3){ const cx=state.center.x, cy=state.center.y; const out=[]; const candidates=[]; for(const e of state.enemies){ if(e.dead) continue; const dx=e.x-cx, dy=e.y-cy; const dist=Math.hypot(dx,dy); if(dist<=minDist) continue; const a=Math.atan2(dy,dx); let da=Math.abs(normalizeAngle(a-ang)); if(da<=angleTol){ candidates.push({e,dist}); } } candidates.sort((a,b)=>a.dist-b.dist); for(let i=0;i<candidates.length && out.length<maxCount;i++) out.push(candidates[i].e); return out; }
+function nearestEnemy(){
+  const p = getPlayerPos();
+  let best=null, bestD=1e9;
+  for(const e of state.enemies){
+    if(e.dead) continue;
+    const dx=e.x-p.x, dy=e.y-p.y;
+    const d=dx*dx+dy*dy;
+    if(d<bestD){ bestD=d; best=e; }
+  }
+  return best;
+}
+function enemiesAlongRay(ang, minDist, maxCount, angleTol=0.3){
+  const p = getPlayerPos();
+  const cx = p.x, cy = p.y;
+  const out=[]; const candidates=[];
+  for(const e of state.enemies){
+    if(e.dead) continue;
+    const dx=e.x-cx, dy=e.y-cy;
+    const dist=Math.hypot(dx,dy);
+    if(dist<=minDist) continue;
+    const a=Math.atan2(dy,dx);
+    let da=Math.abs(normalizeAngle(a-ang));
+    if(da<=angleTol){ candidates.push({e,dist}); }
+  }
+  candidates.sort((a,b)=>a.dist-b.dist);
+  for(let i=0;i<candidates.length && out.length<maxCount;i++) out.push(candidates[i].e);
+  return out;
+}
 
     function killEnemy(e){ e.dead=true; splatterAt(e.x,e.y,true); dropGibs(e.x,e.y); const mult= (state.diss.active? CONFIG.diss.scoreMult : 1) * (1+state.mods.scoreMultBonus); state.score += Math.floor(CONFIG.score.kill * mult); state.cam.shake = Math.min(12, state.cam.shake+4); beep('splat',0.7,120); if(!state.diss.active && state.diss.cooldown<=0){ state.diss.meter = Math.min(100, state.diss.meter + CONFIG.diss.gainPerKill); if(state.diss.meter>=100) activateDiss(); } if(state.diss.active){ const rad=CONFIG.diss.chainAOERadius * state.mods.dissAOEMult; const r2=rad*rad; for(const o of state.enemies){ if(o.dead||o===e) continue; const dx=o.x-e.x, dy=o.y-e.y; if(dx*dx+dy*dy<=r2){ o.hp -= 1; o.bleed=0.2; if(o.hp<=0) killEnemy(o); } } } }
-    function hurtPlayer(dmg=1,selfSplat=false){ state.hp -= dmg; if (state.powerups.lastBreath && state.hp === 1){
-  state.lastBreathArmed = true;
-} state.cam.shake = Math.min(14, state.cam.shake+6); beep('hurt',0.45,90); if(selfSplat) splatterAt(state.center.x,state.center.y,false,1.0); if(state.hp<=0) gameOver(); }
+    function hurtPlayer(dmg=1,selfSplat=false){
+  state.hp -= dmg;
+  if (state.powerups.lastBreath && state.hp === 1) state.lastBreathArmed = true;
+  state.cam.shake = Math.min(14, state.cam.shake+6);
+  beep('hurt',0.45,90);
+  if(selfSplat){
+    const p = getPlayerPos();
+    splatterAt(p.x,p.y,false,1.0);
+  }
+  if(state.hp<=0) gameOver();
+}
 
     // ----------------------- COMBAT ------------------------------
-function addGlint(){
-  state.glints.push({ x:state.center.x, y:state.center.y, t:0, life:0.22 });
+    function addGlint(x, y){
+  if (x == null || y == null){
+    const p = getPlayerPos();
+    x = p.x; y = p.y;
+  }
+  state.glints.push({ x, y, t:0, life:0.22 });
 }
 
 function applyHit(target, dmg){
-  splatterAlongRay(state.center.x, state.center.y, target.x, target.y);
+  const p = getPlayerPos();
+  splatterAlongRay(p.x, p.y, target.x, target.y);
   target.hp -= dmg;
   target.bleed = 0.25;
   if (target.hp <= 0) killEnemy(target);
@@ -451,7 +586,7 @@ function fireShot(){
   state.cam.shake = Math.min(10, state.cam.shake + CONFIG.player.shakeOnShot);
   beep('shot', 0.55, 290+Math.random()*40);
 
-  // LAST BREATH: första skottet vid 1 HP träffar alla fiender
+  // LAST BREATH: första skottet vid 1 HP träffar alla
   if (state.powerups.lastBreath && state.lastBreathArmed){
     state.lastBreathArmed = false;
     addGlint();
@@ -467,18 +602,19 @@ function fireShot(){
     return;
   }
 
+  const p = getPlayerPos();
   const t = nearestEnemy();
-  if (!t){ addGlint(); return; }
+  if (!t){ addGlint(p.x, p.y); return; }
 
-  const ang = Math.atan2(t.y - state.center.y, t.x - state.center.x);
-  addGlint();
+  const ang = Math.atan2(t.y - p.y, t.x - p.x);
+  addGlint(p.x, p.y);
 
   let dmg = 1 + (state.diss.active ? CONFIG.diss.dmgBonus : 0);
   let pierceLeft = (state.diss.active ? CONFIG.diss.pierce : 0) + state.mods.dissPierceBonus;
 
   applyHit(t, dmg);
   if (pierceLeft > 0){
-    const minDist = Math.hypot(t.x - state.center.x, t.y - state.center.y) + 8;
+    const minDist = Math.hypot(t.x - p.x, t.y - p.y) + 8;
     const list = enemiesAlongRay(ang, minDist, pierceLeft);
     for (const e of list) applyHit(e, dmg);
   }
@@ -491,32 +627,34 @@ function fireShot(){
     function dropGibs(x,y){ const n=Math.floor(randRange(CONFIG.gore.gibCount[0], CONFIG.gore.gibCount[1])); for(let i=0;i<n;i++){ const a=Math.random()*Math.PI*2; const sp=randRange(110,200); state.gibs.push({ x,y,vx:Math.cos(a)*sp, vy:Math.sin(a)*sp - randRange(25,70), ang:Math.random()*Math.PI*2, va:randRange(-6,6), size:randRange(6,12), life:randRange(0.9,1.6) }); } }
 // QTE-blood pop (liten, snabb)
 function qteBurst(){
-  // Samma position som QTE-pilen ritas på:
-  const x = state.center.x;
-  const y = state.center.y - (CONFIG.ui.ringRadius + CONFIG.ui.qteGap);
+  const p = getPlayerPos();
+  const r = CONFIG.ui.ringRadius;
+  const x = p.x;
+  const y = p.y - (r + CONFIG.ui.qteGap);
 
-  // 18–28 snabba droppar, lite ljusare röd ton
   const n = (Math.random()*10 + 18) | 0;
   for (let i=0;i<n;i++){
     const a  = Math.random()*Math.PI*2;
-    const sp = 160 + Math.random()*120;      // hastighet
+    const sp = 160 + Math.random()*120;
     const vx = Math.cos(a)*sp;
     const vy = Math.sin(a)*sp;
-    const life = 0.25 + Math.random()*0.35;  // kort livslängd
-
-    // makeParticle(x,y,vx,vy,life, r,g,b)
+    const life = 0.25 + Math.random()*0.35;
     state.particles.push(
       makeParticle(x, y, vx, vy, life, 150+Math.random()*30, 8+Math.random()*12, 12+Math.random()*18)
     );
   }
-
-  // (valfritt) liten ringglimt för extra respons
   state.glints.push({ x, y, t:0, life:0.18 });
 }
     // ----------------------- WAVES & RELICS ----------------------
     function nextWave(){
   state.wave++;
   state.parasolReady = !!state.powerups.parasolShield;
+  // När wave 21 startar börjar nya låten
+if (state.wave === 21) {
+  // Se till att gamla verkligen är pausad/mutad
+  if (bgm) { try { bgm.pause(); } catch(_) {} }
+  startKey2KillMusic(2.0, 0.35); // fade in 2s till volym 0.35 (justera efter smak)
+}
 
   // REGN-BÅGEN
   if (state.wave === 21){
@@ -545,10 +683,13 @@ function qteBurst(){
     state.spawnQueue=0; state.spawnTimer=0;
     setTimeout(spawnMiniBoss, 200);
   } else {
-    const toSpawn = CONFIG.wave.startEnemies + CONFIG.wave.addPerWave*(state.wave-1);
-    state.spawnQueue = toSpawn;
-    state.spawnTimer=0.0;
-  } state.score += CONFIG.score.waveBonus; }
+  let toSpawn = CONFIG.wave.startEnemies + CONFIG.wave.addPerWave*(state.wave-1);
+  if (postSirenActive()){
+    toSpawn = Math.round(toSpawn * CONFIG.postSiren.addPerWaveMult);
+  }
+  state.spawnQueue = toSpawn;
+  state.spawnTimer = 0.0;
+} state.score += CONFIG.score.waveBonus; }
 
     function setupWhisperForBreak(){ if(state.isBossWave || state.isMiniBossWave) { state.whisper.active=false; return; } if(Math.random()>CONFIG.whisper.showChance){ state.whisper.active=false; return; } if(state.whisperPool.length===0) state.whisperPool = shuffledIndices(WHISPERS.length); const idx=state.whisperPool.pop(); const line=WHISPERS[idx]; const fontPx=Math.floor(randRange(CONFIG.whisper.minSize, CONFIG.whisper.maxSize+1)); const duration=CONFIG.whisper.fadeIn + CONFIG.whisper.fadeOut; state.whisper={active:true,text:line,t:0,duration,fontPx}; state.breakTimer = Math.max(state.breakTimer, duration); }
 
@@ -633,70 +774,188 @@ function applyRelic(id){
 }
 
     // ----------------------- UPDATE ------------------------------
-    function loop(now){ requestAnimationFrame(loop); const t=now*0.001; state.dt=Math.min(0.033, t - state.time); state.time=t; state.cam.shake*=0.92; if(state.cam.shake<0.1) state.cam.shake=0; state.cam.x=(Math.random()*2-1)*state.cam.shake; state.cam.y=(Math.random()*2-1)*state.cam.shake; if(state.overlay.type){ /* paused for overlay */ } else if(state.running) updateGame(state.dt); render(); }
-    function updateGame(dt){ if(state.qte.justPopped>0) state.qte.justPopped-=dt; if(state.bannerFlash>0) state.bannerFlash-=dt; if(state.diss.active){ state.diss.meter -= CONFIG.diss.drainPerSec * state.mods.dissDrainMult * dt; state.diss.grace -= dt; if(state.diss.grace<0) state.diss.grace=0; if(state.diss.meter<=0){ state.diss.active=false; state.diss.meter=0; state.diss.cooldown = CONFIG.diss.cooldown; } } else if(state.diss.cooldown>0){ state.diss.cooldown -= dt; if(state.diss.cooldown<0) state.diss.cooldown=0; } if(state.mods.qteMissNullifyCooldown>0) state.mods.qteMissNullifyCooldown -= dt; if(state.breakTimer>0){ state.breakTimer -= dt; if(state.whisper.active){ state.whisper.t += dt; if(state.whisper.t>=state.whisper.duration) state.whisper.active=false; } } else { if(!state.isBossWave && !state.isMiniBossWave){ if(state.spawnQueue>0){ state.spawnTimer -= dt; if(state.spawnTimer<=0){ spawnEnemy(); state.spawnQueue--; state.spawnTimer = CONFIG.wave.spawnInterval * (0.95 ** (state.wave-1)); } } } } const cx=state.center.x, cy=state.center.y; const speedScale= state.diss.active? CONFIG.diss.enemySpeedScale : 1.0; for(const e of state.enemies){ if(e.dead) continue; const dx=cx-e.x, dy=cy-e.y; const d=Math.hypot(dx,dy)||1; const sp=(e.speed*speedScale)*dt; e.x += (dx/d)*sp; e.y += (dy/d)*sp; const typeSize = e.boss? CONFIG.boss.size*0.5 : (e.mini? CONFIG.miniboss.size*0.5 : 6); const touchR = typeSize + CONFIG.player.radius; if (Math.hypot(e.x-cx, e.y-cy) < touchR){
-  // Parasol Shield: blocka första träffen per wave
-  if (state.powerups.parasolShield && state.parasolReady){
-    state.parasolReady = false;
-    // "Studsa bort" mindre fiender lite så det känns
-    if(!(e.boss || e.mini)){
-      const nx = (e.x - cx) / (Math.hypot(e.x-cx, e.y-cy) || 1);
-      const ny = (e.y - cy) / (Math.hypot(e.x-cx, e.y-cy) || 1);
-      e.x += nx * 18; e.y += ny * 18;
-    }
-    state.notif = { t:0.8, text:'PARASOL BLOCK' };
-    // Nackdel: snabbare spawns en stund
-    state.mods.enemySpeedBoost = 0.20;
-    state.mods.enemyBoostTimer = 10.0; // sekunder
-  } else {
-    const touchDmg = e.boss? CONFIG.boss.touchDamage : (e.mini? CONFIG.miniboss.touchDamage : 1);
-    hurtPlayer(touchDmg);
-    if(e.boss || e.mini){
-      const dx=cx-e.x, dy=cy-e.y, d=Math.hypot(dx,dy)||1;
-      const nx=-dx/d, ny=-dy/d;
-      e.x += nx*18; e.y += ny*18;
-    } else {
-      e.dead=true;
-      splatterAt(e.x,e.y,true);
-      dropGibs(e.x,e.y);
-    }
-  }
-}
-}
-// Tidsbegränsa Parasol-nackdelens hastighetsboost
-if (state.mods.enemyBoostTimer > 0){
-  state.mods.enemyBoostTimer -= dt;
-  if (state.mods.enemyBoostTimer <= 0){
-    state.mods.enemyBoostTimer = 0;
-    state.mods.enemySpeedBoost = 0;
-  }
-} state.enemies = state.enemies.filter(e=>!e.dead); const bossAlive = state.enemies.some(e=> (e.boss || e.mini) && !e.dead); const waveDone = (state.breakTimer<=0) && (state.spawnQueue===0) && (!bossAlive) && (state.enemies.length===0);
-if(waveDone){
-  // Specialfall: wave 20 Siren
-  if (state.wave === 20 && !state.flags.sirenResolved){
-    state.flags.sirenMet = true;
-    // Visa Companion / Leave istället för relic
-    state.overlay = {
-      type: 'sirenChoice',
-      options: [
-        { id:'companion', title:'Companion', desc:'She joins you. (Small passive boon.)' },
-        { id:'leave',     title:'Leave',     desc:'A shot rings out. The rain remembers.' }
-      ],
-      selected: 0
-    };
-    state.running = false;
-    return; // vänta på spelarens val
+    function loop(now){ requestAnimationFrame(loop); const t=now*0.001; state.dt=Math.min(0.033, t - state.time); state.time=t; if(state.pause){
+    render(); // bara rita, ingen update
+    return;
   }
 
-  // Vanlig relic-logik för andra boss/miniboss-waves
-  if(state.isMiniBossWave || state.isBossWave){
-    maybeOfferRelic();
+  if(state.overlay.type){ /* paused för overlay */ }
+  else if(state.running) state.cam.shake*=0.92; if(state.cam.shake<0.1) state.cam.shake=0; state.cam.x=(Math.random()*2-1)*state.cam.shake; state.cam.y=(Math.random()*2-1)*state.cam.shake; if(state.overlay.type){ /* paused for overlay */ } else if(state.running) updateGame(state.dt); render(); }
+    function updateGame(dt){
+  // timers
+  if(state.qte.justPopped>0) state.qte.justPopped-=dt;
+  if(state.bannerFlash>0) state.bannerFlash-=dt;
+
+  if(state.diss.active){
+    state.diss.meter -= CONFIG.diss.drainPerSec * state.mods.dissDrainMult * dt;
+    state.diss.grace -= dt; if(state.diss.grace<0) state.diss.grace=0;
+    if(state.diss.meter<=0){ state.diss.active=false; state.diss.meter=0; state.diss.cooldown = CONFIG.diss.cooldown; }
+  } else if(state.diss.cooldown>0){
+    state.diss.cooldown -= dt; if(state.diss.cooldown<0) state.diss.cooldown=0;
   }
-  nextWave();
-} const g=CONFIG.gore.gravity; for(const p of state.particles){ p.vx*=CONFIG.gore.drag; p.vy*=CONFIG.gore.drag; p.vy += g*dt; p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt; if(p.life<=0){ bloodCtx.save(); bloodCtx.globalAlpha=0.14; bloodCtx.fillStyle = `rgb(${p.r|0},${p.g|0},${p.b|0})`; bloodCtx.fillRect(p.x,p.y,p.size,p.size); bloodCtx.restore(); } } if(state.particles.length>CONFIG.gore.maxParticles) state.particles.splice(0, state.particles.length - CONFIG.gore.maxParticles); state.particles = state.particles.filter(p=>p.life>0); for(const gB of state.gibs){ gB.vx*=0.992; gB.vy*=0.992; gB.vy += g*dt; gB.x += gB.vx*dt; gB.y += gB.vy*dt; gB.ang += gB.va*dt; gB.life -= dt*0.25; if(gB.life<=0){ bloodCtx.save(); bloodCtx.globalAlpha=0.18; bloodCtx.fillStyle = PALETTE.ink; bloodCtx.translate(gB.x,gB.y); bloodCtx.rotate(gB.ang); bloodCtx.fillRect(-gB.size*0.7,-gB.size*0.3,gB.size*1.4,gB.size*0.6); bloodCtx.restore(); } } state.gibs = state.gibs.filter(gb=>gb.life>0); for(const gl of state.glints){ gl.t += dt; } state.glints = state.glints.filter(gl=> gl.t < gl.life); if(state.hp<=2){ if(Math.random()<0.015) state.fx.glitch = 0.10; } state.fx.glitch *= 0.9; state.target = nearestEnemy(); if(state.notif.t>0) state.notif.t -= dt; updateRain(dt); {
-  const k = Math.exp(-dt * 3);                 // respons-hastighet
-  state.worldLight = state.worldLight * k + state.worldLightTarget * (1 - k);
-} if(state.gameOver) return; }
+  if(state.mods.qteMissNullifyCooldown>0) state.mods.qteMissNullifyCooldown -= dt;
+
+  // --- WASD-rörelse (efter Siren) ---
+  if (freeMoveEnabled()){
+    let vx = 0, vy = 0;
+    if (state.input.up)    vy -= 1;
+    if (state.input.down)  vy += 1;
+    if (state.input.left)  vx -= 1;
+    if (state.input.right) vx += 1;
+    if (vx || vy){
+      const len = Math.hypot(vx, vy) || 1;
+      vx/=len; vy/=len;
+      state.player.x += vx * state.player.speed * dt;
+      state.player.y += vy * state.player.speed * dt;
+    }
+    const r = CONFIG.player.radius;
+    state.player.x = Math.max(r, Math.min(state.width  - r, state.player.x));
+    state.player.y = Math.max(r, Math.min(state.height - r, state.player.y));
+  }
+
+  // spawn / break
+  if(state.breakTimer>0){
+    state.breakTimer -= dt;
+    if(state.whisper.active){
+      state.whisper.t += dt;
+      if(state.whisper.t>=state.whisper.duration) state.whisper.active=false;
+    }
+  } else {
+    if(!state.isBossWave && !state.isMiniBossWave){
+      if(state.spawnQueue>0){
+        state.spawnTimer -= dt;
+        if(state.spawnTimer<=0){
+          spawnEnemy();
+          state.spawnQueue--;
+          state.spawnTimer = CONFIG.wave.spawnInterval * (0.95 ** (state.wave-1));
+        }
+      }
+    }
+  }
+
+  // fiendelogik mot spelaren
+  const p = getPlayerPos();
+  const cx = p.x, cy = p.y;
+  const speedScale = state.diss.active? CONFIG.diss.enemySpeedScale : 1.0;
+
+  for(const e of state.enemies){
+    if(e.dead) continue;
+    const dx=cx-e.x, dy=cy-e.y;
+    const d=Math.hypot(dx,dy)||1;
+    const sp=(e.speed*speedScale)*dt;
+    e.x += (dx/d)*sp;
+    e.y += (dy/d)*sp;
+
+    const typeSize = e.boss? CONFIG.boss.size*0.5 : (e.mini? CONFIG.miniboss.size*0.5 : 6);
+    const touchR = typeSize + CONFIG.player.radius;
+    if (Math.hypot(e.x-cx, e.y-cy) < touchR){
+      // Parasol förstaträff
+      if (state.powerups.parasolShield && state.parasolReady){
+        state.parasolReady = false;
+        if(!(e.boss || e.mini)){
+          const nn = Math.hypot(e.x-cx, e.y-cy) || 1;
+          const nx = (e.x - cx)/nn, ny = (e.y - cy)/nn;
+          e.x += nx * 18; e.y += ny * 18;
+        }
+        state.notif = { t:0.8, text:'PARASOL BLOCK' };
+        state.mods.enemySpeedBoost = 0.20;
+        state.mods.enemyBoostTimer = 10.0;
+      } else {
+        const touchDmg = e.boss? CONFIG.boss.touchDamage : (e.mini? CONFIG.miniboss.touchDamage : 1);
+        hurtPlayer(touchDmg);
+        if(e.boss || e.mini){
+          const nn = Math.hypot(cx-e.x, cy-e.y)||1;
+          const nx = (e.x - cx)/nn, ny = (e.y - cy)/nn;
+          e.x += nx*(-18); e.y += ny*(-18);
+        } else {
+          e.dead = true;
+          splatterAt(e.x,e.y,true);
+          dropGibs(e.x,e.y);
+        }
+      }
+    }
+  }
+
+  // Parasol nackdel-timer
+  if (state.mods.enemyBoostTimer > 0){
+    state.mods.enemyBoostTimer -= dt;
+    if (state.mods.enemyBoostTimer <= 0){
+      state.mods.enemyBoostTimer = 0;
+      state.mods.enemySpeedBoost = 0;
+    }
+  }
+
+  // wave clear?
+  state.enemies = state.enemies.filter(e=>!e.dead);
+  const bossAlive = state.enemies.some(e=> (e.boss || e.mini) && !e.dead);
+  const waveDone = (state.breakTimer<=0) && (state.spawnQueue===0) && (!bossAlive) && (state.enemies.length===0);
+  if(waveDone){
+    if (state.wave === 20 && !state.flags.sirenResolved){
+      state.flags.sirenMet = true;
+      state.overlay = {
+        type: 'sirenChoice',
+        options: [
+          { id:'companion', title:'Companion', desc:'She joins you. (Small passive boon.)' },
+          { id:'leave',     title:'Leave',     desc:'A shot rings out. The rain remembers.' }
+        ],
+        selected: 0
+      };
+      state.running = false;
+      return;
+    }
+    if(state.isMiniBossWave || state.isBossWave) maybeOfferRelic();
+    nextWave();
+  }
+
+  // partiklar/gibs/glints
+  const g=CONFIG.gore.gravity;
+  for(const p of state.particles){
+    p.vx*=CONFIG.gore.drag; p.vy*=CONFIG.gore.drag; p.vy += g*dt;
+    p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt;
+    if(p.life<=0){
+      bloodCtx.save();
+      bloodCtx.globalAlpha=0.14;
+      bloodCtx.fillStyle = `rgb(${p.r|0},${p.g|0},${p.b|0})`;
+      bloodCtx.fillRect(p.x,p.y,p.size,p.size);
+      bloodCtx.restore();
+    }
+  }
+  if(state.particles.length>CONFIG.gore.maxParticles)
+    state.particles.splice(0, state.particles.length - CONFIG.gore.maxParticles);
+  state.particles = state.particles.filter(p=>p.life>0);
+
+  for(const gB of state.gibs){
+    gB.vx*=0.992; gB.vy*=0.992; gB.vy += g*dt;
+    gB.x += gB.vx*dt; gB.y += gB.vy*dt;
+    gB.ang += gB.va*dt; gB.life -= dt*0.25;
+    if(gB.life<=0){
+      bloodCtx.save(); bloodCtx.globalAlpha=0.18; bloodCtx.fillStyle = PALETTE.ink;
+      bloodCtx.translate(gB.x,gB.y); bloodCtx.rotate(gB.ang);
+      bloodCtx.fillRect(-gB.size*0.7,-gB.size*0.3,gB.size*1.4,gB.size*0.6);
+      bloodCtx.restore();
+    }
+  }
+  state.gibs = state.gibs.filter(gb=>gb.life>0);
+
+  for(const gl of state.glints) gl.t += dt;
+  state.glints = state.glints.filter(gl=> gl.t < gl.life);
+
+  if(state.hp<=2){ if(Math.random()<0.015) state.fx.glitch = 0.10; }
+  state.fx.glitch *= 0.9;
+
+  state.target = nearestEnemy();
+  if(state.notif.t>0) state.notif.t -= dt;
+
+  updateRain(dt);
+
+  // världsljus easing
+  {
+    const k = Math.exp(-dt * 3);
+    state.worldLight = state.worldLight * k + state.worldLightTarget * (1 - k);
+  }
+
+  if(state.gameOver) return;
+}
 
     // ----------------------- RENDER ------------------------------
     function render(){ ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width, canvas.height); ctx.save(); ctx.translate(state.cam.x, state.cam.y); drawArena();
@@ -707,20 +966,35 @@ for(const e of state.enemies) drawEnemy(e);
 //   drawPlayer();     <-- flytta detta NEDANFÖR som i blocket nedan
 for(const p of state.particles) drawParticle(p);
 drawGlints();
-if(!state.inMenu && !state.gameOver){
+if(!state.inMenu && !state.gameOver && !state.pause){
   drawDissociationRing();
   // gör pilarna stilla genom att neutralisera kameraskak
   ctx.save();
   ctx.translate(-state.cam.x, -state.cam.y);
   drawQTE();
   ctx.restore();
+  
+  
 }
 
 drawGrainAndFlicker();         // <-- LÄGG TILL HÄR
 
 if(!state.inMenu) drawPlayer(); // <-- OCH FLYTTA HIT
 ctx.restore();
-drawHUD(); if(!state.inMenu && !state.gameOver) drawWhisper(); if(state.inMenu) { drawMenuBackground(); drawMenu(); } else if(state.gameOver) drawGameOver(); if(state.overlay.type) drawOverlay();
+drawHUD(); if(!state.inMenu && !state.gameOver) drawWhisper(); if(state.inMenu) { drawMenuBackground(); drawMenu(); } else if(state.gameOver) drawGameOver(); if(state.overlay.type) drawOverlay(); if (state.pause && pauseReady && pause2Ready){
+  ctx.save();
+  const img = (Math.floor(state.time / 0.6) % 2 === 0 ? pauseImg : pauseImg2);
+
+  const W = img.width;   // använd bildens faktiska bredd
+  const H = img.height;  // använd bildens faktiska höjd
+
+  const x = state.center.x;
+  const y = state.center.y;
+
+  ctx.globalAlpha = 0.9;
+  ctx.drawImage(img, x - W/2, y - H/2);
+  ctx.restore();
+}
 }
 
     function drawArena(){ const w=canvas.width, h=canvas.height; const grad = ctx.createRadialGradient(state.center.x, state.center.y, 60, state.center.x, state.center.y, Math.max(w,h)*0.75); grad.addColorStop(0, PALETTE.bg1); grad.addColorStop(1, '#07090f'); ctx.fillStyle = grad; ctx.fillRect(0,0,w,h); ctx.globalAlpha=0.13; ctx.fillStyle=PALETTE.grid; for(let x=0;x<w;x+=24) ctx.fillRect(x,0,1,h); for(let y=0;y<h;y+=24) ctx.fillRect(0,y,w,1); ctx.globalAlpha=1; const vg = ctx.createRadialGradient(state.center.x, state.center.y, Math.min(w,h)*0.45, state.center.x, state.center.y, Math.max(w,h)*0.85); vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1, PALETTE.vignette); ctx.fillStyle=vg; ctx.fillRect(0,0,w,h); if(state.diss.active){ ctx.fillStyle=PALETTE.dissTint; ctx.fillRect(0,0,w,h); } if(state.hp<=2){ ctx.fillStyle=PALETTE.lowHPTint; ctx.fillRect(0,0,w,h); }   // Efter-Siren-lyft: gör scenen ljusare
@@ -734,8 +1008,8 @@ drawHUD(); if(!state.inMenu && !state.gameOver) drawWhisper(); if(state.inMenu) 
   } }
 
     function drawPlayer(){
-  const x = state.center.x;
-  const y = state.center.y;
+      const p = getPlayerPos();
+      const x = p.x, y = p.y;
 
   const dir = getFacingDir();
   const img =
@@ -886,11 +1160,57 @@ function drawEnemy(e){
       }
     }
 
-    function drawQTE(){ const key=state.qte.current; const r = CONFIG.ui.ringRadius; const y = state.center.y - (r + CONFIG.ui.qteGap); const scale = 1 + Math.max(0,state.qte.justPopped) * (CONFIG.qte.appearScale - 1); ctx.save(); ctx.translate(state.center.x, y); ctx.scale(scale, scale); drawArrow(0,0, key); ctx.restore(); ctx.save(); ctx.globalAlpha=0.22; ctx.strokeStyle=PALETTE.arrowFill; ctx.lineWidth=2; for(let i=0;i<2;i++){ ctx.beginPath(); ctx.moveTo(state.center.x-26+i*10, y-20); ctx.lineTo(state.center.x+26-i*8, y+20); ctx.stroke(); } ctx.restore(); }
+    function drawQTE(){
+  const key = state.qte.current;
+  const r = CONFIG.ui.ringRadius;
+  const p = getPlayerPos();
+  const y = p.y - (r + CONFIG.ui.qteGap);
+  const scale = 1 + Math.max(0,state.qte.justPopped) * (CONFIG.qte.appearScale - 1);
+
+  ctx.save();
+  ctx.translate(p.x, y);
+  ctx.scale(scale, scale);
+  drawArrow(0,0, key);
+  ctx.restore();
+
+  // dekorlinjer
+  ctx.save();
+  ctx.globalAlpha=0.22;
+  ctx.strokeStyle=PALETTE.arrowFill;
+  ctx.lineWidth=2;
+  for(let i=0;i<2;i++){
+    ctx.beginPath();
+    ctx.moveTo(p.x-26+i*10, y-20);
+    ctx.lineTo(p.x+26-i*8, y+20);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 
     function drawArrow(x,y,key){ ctx.save(); ctx.translate(x,y); ctx.fillStyle = PALETTE.arrowFill; ctx.strokeStyle = PALETTE.arrowStroke; ctx.lineWidth=2; ctx.beginPath(); if(key==='ArrowUp'){ ctx.moveTo(0,-12); ctx.lineTo(12,6); ctx.lineTo(4,6); ctx.lineTo(4,14); ctx.lineTo(-4,14); ctx.lineTo(-4,6); ctx.lineTo(-12,6); } if(key==='ArrowDown'){ ctx.moveTo(0,14); ctx.lineTo(12,-4); ctx.lineTo(4,-4); ctx.lineTo(4,-12); ctx.lineTo(-4,-12); ctx.lineTo(-4,-4); ctx.lineTo(-12,-4); } if(key==='ArrowLeft'){ ctx.moveTo(-14,0); ctx.lineTo(4,-12); ctx.lineTo(4,-4); ctx.lineTo(12,-4); ctx.lineTo(12,4); ctx.lineTo(4,4); ctx.lineTo(4,12); } if(key==='ArrowRight'){ ctx.moveTo(14,0); ctx.lineTo(-4,-12); ctx.lineTo(-4,-4); ctx.lineTo(-12,-4); ctx.lineTo(-12,4); ctx.lineTo(-4,4); ctx.lineTo(-4,12); } ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.fillStyle = '#320b11'; for(let i=0;i<3;i++) pxRect(randRange(-10,10), 14 + Math.random()*6, 2, randRange(4,8)); ctx.restore(); }
 
-    function drawDissociationRing(){ const x=state.center.x, y=state.center.y, r=CONFIG.ui.ringRadius; ctx.save(); ctx.lineWidth=4; ctx.strokeStyle='rgba(50,60,70,0.6)'; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.stroke(); const pct=Math.max(0, Math.min(1, state.diss.meter/100)); ctx.strokeStyle = state.diss.active? PALETTE.dissRing : PALETTE.dissRingIdle; ctx.beginPath(); ctx.arc(x,y,r,-Math.PI/2, -Math.PI/2 + pct*Math.PI*2); ctx.stroke(); if(state.diss.active){ ctx.globalAlpha=0.18; ctx.fillStyle='rgba(140,160,190,0.3)'; ctx.beginPath(); ctx.arc(x,y,r+10,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1; } ctx.restore(); }
+    function drawDissociationRing(){
+  const p = getPlayerPos();
+  const x = p.x, y = p.y, r = CONFIG.ui.ringRadius;
+  ctx.save();
+  ctx.lineWidth=4;
+  ctx.strokeStyle='rgba(50,60,70,0.6)';
+  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.stroke();
+
+  const pct=Math.max(0, Math.min(1, state.diss.meter/100));
+  ctx.strokeStyle = state.diss.active? PALETTE.dissRing : PALETTE.dissRingIdle;
+  ctx.beginPath();
+  ctx.arc(x,y,r,-Math.PI/2, -Math.PI/2 + pct*Math.PI*2);
+  ctx.stroke();
+
+  if(state.diss.active){
+    ctx.globalAlpha=0.18;
+    ctx.fillStyle='rgba(140,160,190,0.3)';
+    ctx.beginPath(); ctx.arc(x,y,r+10,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+  }
+  ctx.restore();
+}
 
     function drawHUD(){
   const pad = 14;
@@ -1020,10 +1340,10 @@ function drawEnemy(e){
     function drawMenu(){
   // 1) Rita titeln först
   banner(
-    'KEY 2 KILL',
-    'Enter = Start  •  Arrow Keys = QTE  •  R = Restart  •  M = Mute',
-    false
-  );
+  'KEY 2 KILL',
+  'Enter = Start  •  Arrow Keys = QTE  •  R = Restart  •  M = Mute  •  P = Pause',
+  false
+);
 
   // 2) Rita paraply-bilden strax ovanför titeln (med korrekt proportioner)
   if (umbrellaReady){
@@ -1053,21 +1373,19 @@ function drawEnemy(e){
     function shuffledIndices(n){ const arr = Array.from({length:n}, (_,i)=>i); for(let i=n-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [arr[i],arr[j]]=[arr[j],arr[i]]; } return arr; }
     let lastFace = 'down';
 
-function getFacingDir(){
+    function getFacingDir(){
   const t = state.target;
   if(!t) return lastFace;
+  const p = getPlayerPos();
 
-  const dx = t.x - state.center.x;
-  const dy = t.y - state.center.y;
+  const dx = t.x - p.x;
+  const dy = t.y - p.y;
   const ax = Math.abs(dx), ay = Math.abs(dy);
 
-  if (Math.abs(ax - ay) < 6) return lastFace; // deadzone för diagonaler
+  if (Math.abs(ax - ay) < 6) return lastFace;
 
-  if (ax > ay) {
-    lastFace = dx > 0 ? 'right' : 'left';
-  } else {
-    lastFace = dy > 0 ? 'down' : 'up';
-  }
+  if (ax > ay) lastFace = dx > 0 ? 'right' : 'left';
+  else         lastFace = dy > 0 ? 'down'  : 'up';
   return lastFace;
 }
     // Grain & menu whispers
