@@ -213,6 +213,17 @@ function playGunshot(){
   }
 }
 
+// --- ASSETS: wave 25 CHAINED WOMB (4 frames) ---
+const chainedImgs = [new Image(), new Image(), new Image(), new Image()];
+let chainedReady = [false,false,false,false];
+
+const chainedSrcs = ["chainedwomb.png","chainedwomb2.png","chainedwomb3.png","chainedwomb4.png"];
+for (let i=0;i<4;i++){
+  chainedImgs[i].onload = ()=>{ chainedReady[i] = true; };
+  chainedImgs[i].src = chainedSrcs[i];
+}
+function chainedAllReady(){ return chainedReady.every(Boolean); }
+
 // --- ASSETS: player directional sprites ---
 const playerSprites = {};
 const playerReady = {};
@@ -411,6 +422,14 @@ if (state.pause) {
     return;
   }
 }
+// === DEBUG HOTKEYS ===
+// F1 -> wave 20 (Siren), F2 -> wave 21 (WASD & ny musik), F3 -> wave 25 (Chained Womb)
+if (e.key === 'F1'){ e.preventDefault(); debugJumpToWave(19); return; }
+if (e.key === 'F2'){ e.preventDefault(); debugJumpToWave(21); return; }
+if (e.key === 'F3'){ e.preventDefault(); debugJumpToWave(25); return; }
+
+// Shift+N -> nästa wave direkt (bra för snabbtest mellan vågor)
+if (e.shiftKey && (e.key === 'N' || e.key === 'n')){ e.preventDefault(); nextWave(); return; }
 // ...
       if(!state.running || state.gameOver || state.inMenu) return;
       if(CONFIG.qte.keys.includes(e.key)) handleQTE(e.key);
@@ -439,6 +458,25 @@ window.addEventListener('keyup', (e)=>{
   const base = CONFIG.player.maxHP + (state.powerups.echoHeart?1:0);
   const penalty = state.powerups.lastBreath ? 1 : 0;
   return Math.max(1, base - penalty);
+}
+// === DEBUG: snabbhoppa till valfri wave ===
+function debugJumpToWave(n){
+  if (!state.running) startGame();         // starta om ifall du står i menyn
+  // nollställ scenen
+  state.enemies.length = 0;
+  state.particles.length = 0;
+  state.gibs.length = 0;
+  state.spawnQueue = 0;
+  state.breakTimer = 0;
+
+  // se till att post-Siren-flaggor/musik beter sig rätt
+  state.flags.sirenResolved = (n >= 21);
+  state.flags.companion     = false;
+  state.flags.sirenDead     = false;
+
+  // sätt nuvarande wave och trigga nästaWave()
+  state.wave = Math.max(0, n - 1);
+  nextWave();                                // spawna korrekt innehåll för vågen
 }
 function getPlayerPos(){
   if (!freeMoveEnabled()) return state.center; // före Siren: stilla i mitten
@@ -494,6 +532,34 @@ function resetRelics(){
     function activateDiss(){ state.diss.active=true; state.diss.grace = CONFIG.diss.graceOnActivate; state.bannerFlash=0.6; beep('boss',0.5,105); state.notif={t:0.9,text:'DISSOCIATION'}; }
 
     // ----------------------- ENTITIES ----------------------------
+    // Spawna en vanlig fiende “bakom” bossen (uppe vid toppen)
+// Spawna en add som ALLTID kommer uppifrån (utanför skärmen)
+function spawnEnemyBehindBoss(){
+  // Håll ett rejält tak så vi inte låser spelet
+  const maxAdds = (postSirenActive() ? CONFIG.wave.maxSimul + CONFIG.postSiren.maxSimulBonus + 60
+                                      : CONFIG.wave.maxSimul + 60);
+  if (state.enemies.filter(e=>!e.dead && !e.boss && !e.mini).length >= maxAdds) return;
+
+  const padX = 40;
+  const topBandY = -randRange(30, 140); // starta ovanför skärmen
+  const w = Math.floor(canvas.width * 0.92);
+  const minX = Math.max(padX, state.center.x - w/2);
+  const maxX = Math.min(state.width - padX, state.center.x + w/2);
+  const x = randRange(minX, maxX);
+  const y = topBandY;
+
+  const hp = CONFIG.enemy.baseHP + ((state.wave>8 && Math.random()<0.1)?1:0);
+  // Gör adds lite snabbare än normalt
+  const baseSpd = (CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave + (Math.random()*8-4)) * 1.25;
+
+  state.enemies.push({
+    x, y,
+    hp, maxHP: hp,
+    speed: baseSpd,
+    t: 0, dead: false, bleed: 0,
+    boss: false, mini: false
+  });
+}
     function spawnEnemy(){ const maxSim = postSirenActive()
     ? CONFIG.wave.maxSimul + CONFIG.postSiren.maxSimulBonus
     : CONFIG.wave.maxSimul;
@@ -502,24 +568,46 @@ function resetRelics(){
     function spawnBoss(){ const pad=CONFIG.enemy.spawnPadding; const edge=(Math.random()*4)|0; let x,y; if(edge===0){x=randRange(pad,state.width-pad);y=pad;} else if(edge===1){x=state.width-pad;y=randRange(pad,state.height-pad);} else if(edge===2){x=randRange(pad,state.width-pad);y=state.height-pad;} else {x=pad;y=randRange(pad,state.height-pad);} const tier=Math.max(1, Math.floor(state.wave/10)); const hp=CONFIG.boss.baseHP + CONFIG.boss.hpPerTier * tier; const speed=(CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave) * CONFIG.boss.speedScale; state.enemies.push({ x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,boss:true,mini:false,size:CONFIG.boss.size }); state.notif={t:1.0,text:'BOSS'}; beep('boss',0.65,80); }
     function spawnMiniBoss(){ const pad=CONFIG.enemy.spawnPadding; const edge=(Math.random()*4)|0; let x,y; if(edge===0){x=randRange(pad,state.width-pad);y=pad;} else if(edge===1){x=state.width-pad;y=randRange(pad,state.height-pad);} else if(edge===2){x=randRange(pad,state.width-pad);y=state.height-pad;} else {x=pad;y=randRange(pad,state.height-pad);} const tier=Math.max(1, Math.floor(state.wave/5)); const hp=CONFIG.miniboss.baseHP + CONFIG.miniboss.hpPerTier * tier; const speed=(CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave) * CONFIG.miniboss.speedScale; state.enemies.push({ x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,boss:false,mini:true,size:CONFIG.miniboss.size }); state.notif={t:1.0,text:'MINIBOSS'}; beep('boss',0.55,95); }
     function spawnSirenBoss(){
-  const pad=CONFIG.enemy.spawnPadding;
-  const edge=(Math.random()*4)|0;
+  const pad = CONFIG.enemy.spawnPadding;
+  const edge = (Math.random()*4)|0;
   let x,y;
-  if(edge===0){x=randRange(pad,state.width-pad);y=pad;}
-  else if(edge===1){x=state.width-pad;y=randRange(pad,state.height-pad);}
-  else if(edge===2){x=randRange(pad,state.width-pad);y=state.height-pad;}
-  else {x=pad;y=randRange(pad,state.height-pad);}
+  if(edge===0){ x=randRange(pad,state.width-pad); y=pad; }
+  else if(edge===1){ x=state.width-pad; y=randRange(pad,state.height-pad); }
+  else if(edge===2){ x=randRange(pad,state.width-pad); y=state.height-pad; }
+  else { x=pad; y=randRange(pad,state.height-pad); }
 
   // lite tuffare än vanlig boss
   const hp = CONFIG.boss.baseHP + CONFIG.boss.hpPerTier * 2; 
-  const speed=(CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave) * (CONFIG.boss.speedScale*0.95);
+  const speed = (CONFIG.enemy.baseSpeed + CONFIG.enemy.speedGrowth*state.wave) * (CONFIG.boss.speedScale*0.95);
 
   state.enemies.push({
     x,y,hp,maxHP:hp,speed,t:0,dead:false,bleed:0,
     boss:true, mini:false, size:CONFIG.boss.size, siren:true
   });
-  state.notif={t:1.2,text:'THE SIREN'};
-  beep('boss',0.75,78);
+  state.notif = { t:1.2, text:'THE SIREN' };
+  beep('boss', 0.75, 78);
+}
+function spawnChainedBoss(){
+  const hp = (CONFIG.boss.baseHP + CONFIG.boss.hpPerTier * 3) * 1.5; // ~+80% HP
+  state.enemies.push({
+    x: state.center.x, y: 0,
+    hp, maxHP: hp,
+    speed: 0,
+    t: 0,
+    dead: false,
+    bleed: 0,
+    boss: true,
+    mini: false,
+    chained: true,
+    size: 28,
+    dropY: 0,
+    dropTargetY: Math.floor(canvas.height * 0.5) | 0,
+    dropSpeed: 520,
+    addSpawnTimer: 0.6 + Math.random()*0.6
+  });
+
+  state.notif = { t:1.2, text:'CHAINED WOMB' };
+  beep('boss', 0.75, 70);
 }
 
 function nearestEnemy(){
@@ -676,6 +764,10 @@ if (state.wave === 21) {
   if (state.wave === 20){
     state.spawnQueue=0; state.spawnTimer=0;
     setTimeout(spawnSirenBoss, 200);
+  } else if (state.wave === 25){
+  // Specialboss: CHAINED WOMB
+  state.spawnQueue=0; state.spawnTimer=0;
+  setTimeout(spawnChainedBoss, 200);
   } else if(state.isBossWave){
     state.spawnQueue=0; state.spawnTimer=0;
     setTimeout(spawnBoss, 200);
@@ -838,43 +930,85 @@ function applyRelic(id){
   const cx = p.x, cy = p.y;
   const speedScale = state.diss.active? CONFIG.diss.enemySpeedScale : 1.0;
 
-  for(const e of state.enemies){
-    if(e.dead) continue;
-    const dx=cx-e.x, dy=cy-e.y;
-    const d=Math.hypot(dx,dy)||1;
-    const sp=(e.speed*speedScale)*dt;
-    e.x += (dx/d)*sp;
-    e.y += (dy/d)*sp;
+  for (const e of state.enemies) {
+  if (e.dead) continue;
 
-    const typeSize = e.boss? CONFIG.boss.size*0.5 : (e.mini? CONFIG.miniboss.size*0.5 : 6);
-    const touchR = typeSize + CONFIG.player.radius;
-    if (Math.hypot(e.x-cx, e.y-cy) < touchR){
-      // Parasol förstaträff
-      if (state.powerups.parasolShield && state.parasolReady){
-        state.parasolReady = false;
-        if(!(e.boss || e.mini)){
-          const nn = Math.hypot(e.x-cx, e.y-cy) || 1;
-          const nx = (e.x - cx)/nn, ny = (e.y - cy)/nn;
-          e.x += nx * 18; e.y += ny * 18;
-        }
-        state.notif = { t:0.8, text:'PARASOL BLOCK' };
-        state.mods.enemySpeedBoost = 0.20;
-        state.mods.enemyBoostTimer = 10.0;
+  // --- CHAINED WOMB (wave 25): står still, sjunker ner, spottar adds ---
+  if (e.chained) {
+  // sjunk-animation
+  if (e.dropY < e.dropTargetY) {
+    e.dropY = Math.min(e.dropTargetY, e.dropY + e.dropSpeed * dt);
+  }
+
+  // Initiera svårighetsvariabler en gång
+  if (!e.aliveTime) {
+    e.aliveTime = 0;
+    e.spawnTimer = 0.15;         // snabb start
+  }
+  e.aliveTime += dt;
+
+  // Spawn-cadence: börjar snabbt, blir snabbare med tiden + när HP sjunker
+  //  - baseInterval krymper gradvis
+  const hpPct = Math.max(0, e.hp / e.maxHP);
+  const baseInterval = 0.28;                 // utgångspunkt
+  const speedupTime = Math.max(0, 0.20 * e.aliveTime);    // snabbare över tid
+  const speedupHP   = Math.max(0, 0.35 * (1 - hpPct));    // snabbare ju lägre HP
+  const interval = Math.max(0.06, baseInterval - speedupTime - speedupHP);
+
+  e.spawnTimer -= dt;
+  while (e.spawnTimer <= 0) {
+    // Burst-storlek skalar upp över tid + låg HP
+    const burst =
+      1
+      + Math.min(6,
+          (e.aliveTime * 0.9)|0     // upp till +? över tid
+          + ((1 - hpPct) * 5)|0     // upp till +5 vid låg HP
+        );
+
+    for (let i=0; i<burst; i++) spawnEnemyBehindBoss();
+    e.spawnTimer += interval;
+  }
+
+  // Ingen touch-kollision eller rörelse
+  continue;
+}
+
+  // --- VANLIGA/BOSS/MINIBOSS: rör sig mot spelaren som tidigare ---
+  const dx = cx - e.x, dy = cy - e.y;
+  const d  = Math.hypot(dx, dy) || 1;
+  const sp = (e.speed * speedScale) * dt;
+  e.x += (dx / d) * sp;
+  e.y += (dy / d) * sp;
+
+  const typeSize = e.boss ? CONFIG.boss.size * 0.5 : (e.mini ? CONFIG.miniboss.size * 0.5 : 6);
+  const touchR = typeSize + CONFIG.player.radius;
+  if (Math.hypot(e.x - cx, e.y - cy) < touchR) {
+    // Parasol förstaträff
+    if (state.powerups.parasolShield && state.parasolReady) {
+      state.parasolReady = false;
+      if (!(e.boss || e.mini)) {
+        const nn = Math.hypot(e.x - cx, e.y - cy) || 1;
+        const nx = (e.x - cx) / nn, ny = (e.y - cy) / nn;
+        e.x += nx * 18; e.y += ny * 18;
+      }
+      state.notif = { t: 0.8, text: 'PARASOL BLOCK' };
+      state.mods.enemySpeedBoost = 0.20;
+      state.mods.enemyBoostTimer = 10.0;
+    } else {
+      const touchDmg = e.boss ? CONFIG.boss.touchDamage : (e.mini ? CONFIG.miniboss.touchDamage : 1);
+      hurtPlayer(touchDmg);
+      if (e.boss || e.mini) {
+        const nn = Math.hypot(cx - e.x, cy - e.y) || 1;
+        const nx = (e.x - cx) / nn, ny = (e.y - cy) / nn;
+        e.x += nx * (-18); e.y += ny * (-18);
       } else {
-        const touchDmg = e.boss? CONFIG.boss.touchDamage : (e.mini? CONFIG.miniboss.touchDamage : 1);
-        hurtPlayer(touchDmg);
-        if(e.boss || e.mini){
-          const nn = Math.hypot(cx-e.x, cy-e.y)||1;
-          const nx = (e.x - cx)/nn, ny = (e.y - cy)/nn;
-          e.x += nx*(-18); e.y += ny*(-18);
-        } else {
-          e.dead = true;
-          splatterAt(e.x,e.y,true);
-          dropGibs(e.x,e.y);
-        }
+        e.dead = true;
+        splatterAt(e.x, e.y, true);
+        dropGibs(e.x, e.y);
       }
     }
   }
+}
 
   // Parasol nackdel-timer
   if (state.mods.enemyBoostTimer > 0){
@@ -961,7 +1095,10 @@ function applyRelic(id){
     function render(){ ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width, canvas.height); ctx.save(); ctx.translate(state.cam.x, state.cam.y); drawArena();
 ctx.drawImage(bloodLayer,0,0);
 drawRain();
-for(const e of state.enemies) drawEnemy(e);
+// först alla som INTE är chained (adds/vanliga/boss/miniboss)
+for (const e of state.enemies) if (!e.chained) drawEnemy(e);
+// sedan CHAINED WOMB sist (ligger ovanpå)
+for (const e of state.enemies) if (e.chained)  drawEnemy(e);
 // if(!state.inMenu)   <-- om du redan gömmer spelaren i menyn
 //   drawPlayer();     <-- flytta detta NEDANFÖR som i blocket nedan
 for(const p of state.particles) drawParticle(p);
@@ -1037,7 +1174,40 @@ drawHUD(); if(!state.inMenu && !state.gameOver) drawWhisper(); if(state.inMenu) 
 function drawEnemy(e){
   ctx.save();
   ctx.translate(e.x, e.y);
+// CHAINED WOMB — wave 25
+if (e.chained){
+  // välj frame i sekvensen 1,2,3,4,3,2
+  const seq = [0,1,2,3,2,1];
+  const idx = seq[Math.floor((state.time/0.15)) % seq.length];
 
+  const ready = chainedAllReady();
+  const img = ready ? chainedImgs[idx] : null;
+
+  // mål: täck ~övre halvan; skala in bilden proportionerligt
+  const targetH = canvas.height * 0.52;         // hur stor på skärmen (justerbar)
+  const scale = targetH / 913;                  // originalhöjd 913
+  const W = 1200 * scale;
+  const H = 913  * scale;
+
+  // häng från överkant: centeras på X, topp = 0 - (H - e.dropY)
+  const x = state.center.x - W/2;
+  const y = -H + e.dropY;  // startar utanför toppen och sjunker ner mot 0 + (targetH-H)
+
+  // rita kedjad boss topp-på (över fiender): (vi ritar bossen i en separat pass i render, se punkt 6)
+  ctx.save();
+  ctx.setTransform(1,0,0,1,0,0); // ignorera translate(e.x,e.y) eftersom vi placerar med absoluta x,y
+  ctx.globalAlpha = 1;
+  if (img) ctx.drawImage(img, x, y, W, H);
+  else { // fallback
+    ctx.fillStyle = '#332126';
+    ctx.fillRect(x, y, W, H);
+  }
+  ctx.restore();
+
+  // bleed-ring kan hoppas över för den här typen – eller rita en subtil markör om du vill
+  ctx.restore();
+  return;
+}
   if (e.boss) {
     // --- BOSS ---
     if (e.siren) {
@@ -1264,7 +1434,10 @@ function drawEnemy(e){
     ctx.fillStyle='#23131a'; ctx.fillRect(x,yb,w,h);
     ctx.fillStyle='#6b2a38'; ctx.fillRect(x,yb,w*pct,h);
     ctx.fillStyle='#e7ecff'; ctx.font='14px K2K-Pixel, monospace'; ctx.textAlign='center';
-    ctx.fillText(bossEnemy.mini ? 'MINIBOSS' : 'BOSS', x+w/2, yb-14);
+    const label =
+  bossEnemy.chained ? 'CHAINED WOMB' :
+  (bossEnemy.mini ? 'MINIBOSS' : 'BOSS');
+ctx.fillText(label, x+w/2, yb-14);
     ctx.font='16px K2K-Pixel, monospace'; ctx.textAlign='left'; ctx.fillStyle = '#dde3f4';
   }
 
